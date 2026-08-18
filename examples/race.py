@@ -82,6 +82,12 @@ def main():
                     help="also write stream.jsonl as the race runs")
     ap.add_argument("--policy", default=None,
                     help="checkpoint from train_marl.py; scripted drivers if omitted")
+    ap.add_argument("--stochastic", action="store_true",
+                    help="sample the policy instead of taking its mean action. "
+                         "Without this a policy races IDENTICALLY for every "
+                         "--seed: the grid is fixed and the engine draws no "
+                         "randomness during a race, so there is nothing left "
+                         "for a seed to vary")
     ap.add_argument("--team-weight", type=float, default=0.5)
     ap.add_argument("--tow", type=float, default=0.32)
     ap.add_argument("--dirty-air", type=float, default=0.35)
@@ -105,6 +111,11 @@ def main():
     if args.policy:
         net = load_policy(args.policy, env.obs_dim)
         field = None
+        if args.stochastic:
+            # Seed torch as well as the engine, or --seed changes the race
+            # without being able to reproduce it.
+            import torch
+            torch.manual_seed(args.seed)
     else:
         field = scripted.build_field(env, seed=args.seed, base_pace=args.pace)
 
@@ -120,7 +131,7 @@ def main():
             import torch
             with torch.no_grad():
                 obs = torch.from_numpy(env.observe())
-                act = net.act(obs, deterministic=True).numpy()
+                act = net.act(obs, deterministic=not args.stochastic).numpy()
         else:
             act = scripted.drive(field, env)
 

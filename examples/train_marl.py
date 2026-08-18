@@ -22,6 +22,13 @@ Training happens in two phases, because they are genuinely different problems:
     phase 2  race        the full field, full race distance, aero and contact
                          on, cars rejoin instead of being deleted.
 
+Phase 2 rejoining rather than terminating is not a detail. A policy trained
+where leaving the circuit deletes the car never meets a barrier and never takes
+damage, so flat-out is optimal for it -- and racing it puts the entire field
+into the wall on lap one. Training on the distribution it will be evaluated on
+is what makes it work, and it requires the penalties to be rescaled to match;
+see race_phase_config.
+
 Skipping phase 1 does eventually work and takes far longer: a policy that
 cannot get round Turn 1 learns nothing about racecraft, because it never
 survives long enough to be near anyone.
@@ -258,6 +265,40 @@ def drive_phase_config(args):
     cfg.reward.position_weight = 0.0   # nobody to race
     cfg.reward.finish_weight = 0.0
     cfg.reward.team_weight = 0.0
+    # Phase 1 gets slower as it trains, and `--time-penalty` is the lever for
+    # it -- but it is OFF by default, and the reason is a trap worth writing
+    # down because the obvious fix makes the policy much worse.
+    #
+    # The decline is real and the cause is plain. Progress is paid per METRE and
+    # the episode ends when the car leaves the circuit, so driving slowly pays
+    # better: over 170 iterations the policy slides from 183 kph covering 260 m
+    # per episode to 48 kph covering 688 m, which is 13 units of reward against
+    # 34. Going slowly wins on the reward as specified.
+    #
+    # A per-step charge reverses that trade exactly as intended. Measured from
+    # one seed: 0.0 peaks at 183 kph and collapses to 72; 0.02 holds 180 kph
+    # until iteration 130 and then goes the same way; 0.05 climbs to 215 kph and
+    # stays there. Phase-2 reward improved too, from 0.073 to 0.091.
+    #
+    # And the resulting policy is a disaster. Raced, it put ALL TWENTY cars into
+    # the barrier inside seventeen seconds -- 0 of 20 finishing against 19.8
+    # without it, at 100% damage. Phase-1 speed is a proxy, and this optimises
+    # the proxy at the expense of the thing it stands for.
+    #
+    # The reason is the training/racing mismatch. Both phases run with
+    # `terminate_off_track`, so leaving the circuit merely deletes the car: the
+    # policy never meets a barrier and never takes damage, and under those rules
+    # flat-out really is optimal. A race recovers cars instead of deleting them,
+    # and flat-out means a wall at the first corner. Without the time penalty
+    # the policy is too timid to reach the barriers, which is not the same as
+    # being right, but it does finish races.
+    #
+    # So: leave it off, and treat the phase-1 decline as a known issue rather
+    # than trading a visible problem for an invisible one. Fixing it properly
+    # means closing the mismatch, not adding pressure to a phase that does not
+    # model the consequence.
+    if args.time_penalty is not None:
+        cfg.reward.time_penalty = args.time_penalty
     cfg.aero.enabled = False
     cfg.contact.enabled = False
     if args.retire_penalty is not None:
@@ -280,8 +321,46 @@ def race_phase_config(args):
     cfg.reward.terminate_off_track = True
     cfg.reward.team_weight = args.team_weight
     cfg.reward.position_weight = args.position_weight
+    # --- phase 2 trains under the rules a RACE uses ------------------------
+    #
+    # This is the single most consequential setting in this file, and it took
+    # five training runs to get right, so the reasoning is worth keeping.
+    #
+    # With `terminate_off_track` on, leaving the circuit simply deletes the car.
+    # The policy therefore never meets a barrier, never takes damage, and never
+    # learns that running wide costs anything beyond ending the episode. Under
+    # THOSE rules, flat-out is genuinely optimal. Race such a policy -- where a
+    # car is recovered rather than deleted -- and it drives into the first wall
+    # it finds: a field trained that way put all twenty cars into the barrier
+    # inside seventeen seconds. The version that survives a race only does so by
+    # being too timid to reach the barriers, which is not the same as being
+    # right.
+    #
+    # So phase 2 runs with recovery, like a race. But the penalties below have
+    # to be rescaled with it, and that is the part that is easy to miss: every
+    # one of them is sized for a world where a mistake ENDS the episode.
+    cfg.reward.terminate_off_track = False
+
+    # Charged per step spent outside the corridor. At the 5.0 default a car is
+    # billed until it is recovered ~3 s later rather than once on the way out.
+    # Measured on the scripted field over one lap: 79 off-track steps per car,
+    # so 397 of penalty against 313 of progress reward -- a NET LOSS for driving
+    # a competent lap. Two training runs collapsed to 1 kph on this before it
+    # was found, because never moving is the best reply to a negative return.
+    cfg.reward.off_track_penalty = 0.1
+
+    # Same reasoning, less extreme. A DNF should hurt, but at 20.0 an untrained
+    # field that crashes constantly sees little else.
+    cfg.reward.retire_penalty = 5.0
+
+    if args.race_terminates_off_track is not None:
+        cfg.reward.terminate_off_track = args.race_terminates_off_track
     if args.retire_penalty is not None:
         cfg.reward.retire_penalty = args.retire_penalty
+    if args.time_penalty is not None:
+        cfg.reward.time_penalty = args.time_penalty
+    if args.off_track_penalty is not None:
+        cfg.reward.off_track_penalty = args.off_track_penalty
     return cfg
 
 
@@ -482,6 +561,19 @@ def main():
                     help="mlp is the flat baseline; set reads neighbours as a set")
     ap.add_argument("--retire-penalty", type=float, default=None,
                     help="override RewardConfig::retire_penalty for both phases")
+    ap.add_argument("--time-penalty", type=float, default=None,
+                    help="per policy step. Phase 1 needs this: without it, "
+                         "driving slowly earns more than driving quickly")
+    ap.add_argument("--race-terminates-off-track", type=lambda v: bool(int(v)), default=None,
+                    choices=[False, True],
+                    help="phase 2 only. 0 races under a real race's rules, so "
+                         "the policy meets barriers and damage during training")
+    ap.add_argument("--off-track-penalty", type=float, default=None,
+                    help="per step spent outside the corridor. The default 5.0 "
+                         "assumes the car is deleted on the step it goes off; "
+                         "with --race-terminates-off-track 0 it is charged "
+                         "until recovery instead, ~75 steps, and buries "
+                         "everything else in the reward")
     ap.add_argument("--team-weight", type=float, default=0.5)
     ap.add_argument("--position-weight", type=float, default=1.0)
     ap.add_argument("--episode-distance", type=float, default=3000.0)

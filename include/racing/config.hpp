@@ -694,7 +694,22 @@ struct RewardConfig {
   // -- penalties ----------------------------------------------------------
   double off_track_penalty = 5.0;   // per step spent outside the corridor
   double contact_penalty = 2.0;     // per contact, scaled by severity
-  double time_penalty = 0.0;        // per policy step; 0 while shaping carries it
+  // Per policy step. 0 here because a race already has time pressure -- the
+  // position term pays for places, and places are lost by being slow.
+  //
+  // Training is different, and there is a trap here. With no rivals and an
+  // episode that ends when the car leaves the circuit, progress paid per metre
+  // makes driving SLOWLY the better strategy: it survives longer and covers
+  // more total distance. Phase 1 duly slides from 183 kph over 260 m to 48 kph
+  // over 688 m, which is 13 units of reward against 34.
+  //
+  // Setting this to 0.05 reverses that trade and takes phase 1 to 215 kph. It
+  // also produces a policy that puts every car into the barrier on the first
+  // lap, because with `terminate_off_track` the training world has no barriers
+  // in it and flat-out is genuinely optimal there. See the long note in
+  // examples/train_marl.py; the lever exists, but reach for it only alongside a
+  // phase 2 that models the consequence.
+  double time_penalty = 0.0;
 
   // Paid once, on the step a car retires from an ACCIDENT -- a collision or the
   // barrier. A DNF already costs a car everything it would have earned for the
