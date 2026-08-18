@@ -91,6 +91,13 @@ TEST_CASE("everyone races to the same finish line", "[racing][race]") {
   c.field.n_teams = 2;
   c.field.cars_per_team = 2;
   c.track.grid_spacing = 20.0;
+  // The cars here are driven with a fixed throttle and no steering, so they
+  // leave the circuit and are carried round by the recovery mechanism. That is
+  // fine for a test about where the flag falls, but with barriers in the world
+  // it is also a car repeatedly hitting a wall. Damage is not what is under
+  // test, so it is off; see test_racing_damage.cpp for what happens when it
+  // is on.
+  c.damage.enabled = false;
   auto env = make(c);
   env->reset(0);
 
@@ -123,6 +130,7 @@ TEST_CASE("laps are counted and timed", "[racing][race]") {
   c.field.cars_per_team = 1;
   c.track.episode_distance = -1.0;
   c.track.laps = 2;
+  c.damage.enabled = false;  // as above: a lap-counting test, not a crash test
   auto env = make(c);
   env->reset(0);
 
@@ -249,6 +257,13 @@ TEST_CASE("a car that runs wide is penalised but stays in the race",
   c.field.cars_per_team = 1;
   c.reward.terminate_off_track = false;
   c.track.episode_distance = 4000.0;
+  // What this checks is that leaving the corridor is not by itself terminal:
+  // the car is penalised, recovered, and races on. Damage is off because the
+  // input below is full lock held for six hundred steps, which is not a car
+  // running wide -- it is a car driven into the barrier over and over, and
+  // that SHOULD end its race. The boundary between the two lives in
+  // test_racing_damage.cpp.
+  c.damage.enabled = false;
   auto env = make(c);
   env->reset(0);
 

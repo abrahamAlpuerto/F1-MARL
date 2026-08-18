@@ -38,12 +38,13 @@ example imports the engine.
 `episode.json` ships a `fields` array and a `stride`:
 
 ```json
-"stride": 27,
+"stride": 28,
 "fields": ["x","y","z","heading","speed","steer","throttle","downforce",
            "drag","wake","lateral_offset","position","lap","lap_fraction",
            "gap_ahead","flags","tyre_temp_front","tyre_temp_rear",
            "tyre_wear_front","tyre_wear_rear","tyre_grip","fuel_kg",
-           "gear","rpm","ers_charge","lateral_g","longitudinal_g"]
+           "gear","rpm","ers_charge","lateral_g","longitudinal_g",
+           "damage"]
 ```
 
 Fields get **appended** over time. A reader that looks up `fields.indexOf("speed")`
@@ -52,7 +53,7 @@ first time something is added ahead of it, and it will not throw — it will jus
 be quietly wrong. Existing fields are never reordered or removed, so name lookup
 is always safe.
 
-**This has already happened once.** The stride went from 16 to 27 when the tyre,
+**This has already happened twice.** The stride went from 16 to 27 when the tyre,
 fuel and powertrain physics arrived. Everything that existed before is still
 there, under the same name, at the same index — but any reader that had `16`
 written into it broke, and one that asked the header did not. Use `has("rpm")`
@@ -109,10 +110,15 @@ smooth for a map view — or ask for fewer laps.
 | `ers_charge` | 0…1 | fraction of the hybrid store remaining |
 | `lateral_g` | g | signed; the g-force trace |
 | `longitudinal_g` | g | signed; negative under braking |
+| `damage` | 0…1 | 0 is undamaged, 1 is out of the race. Never decreases, never exceeds 1 |
 
 `flags` bits: `1` off track, `2` in contact this frame, `4` finished,
 `8` retired, `16` DRS open, `32` wheelspin, `64` a locked wheel,
-`128` deploying hybrid power.
+`128` deploying hybrid power, `256` against a barrier this frame.
+
+`256` is set only for the frame or two an impact lasts, so latch it rather than
+expecting it to persist — by the time it is drawn the car has already bounced
+off. `8` is the opposite: once set it stays set for the rest of the episode.
 
 ---
 
@@ -121,11 +127,11 @@ smooth for a map view — or ask for fewer laps.
 ```json
 {
   "format": "racing-feed",
-  "version": 3,
+  "version": 4,
   "n_frames": 14948,
   "n_cars": 20,
   "frame_rate": 60.0,
-  "stride": 27,
+  "stride": 28,
   "fields": ["x", "y", ...],
   "track": "bahrain",
   "lap_length_m": 5357.55,
@@ -159,7 +165,7 @@ searched.
 | `rejoin` | `value` | back on. `value` of 1 means it was recovered after being stranded |
 | `lap` | `value` | `car` completed lap `lap` in `value` seconds |
 | `finish` | `value` | `car` took the flag in position `value` |
-| `retire` | — | `car` is out |
+| `retire` | `value`, `reason` | `car` is out. `value` is the damage it had; `reason` is `collision`, `barrier` or `off_track` |
 
 **Ignore unknown types, do not throw.** More will be added.
 
@@ -270,6 +276,13 @@ PY
 ```
 
 **`heading` is not wrapped.** It reaches −5 rad and beyond over a lap.
+
+**Cars retire.** A car with `flags & 8` has stopped where it crashed and will
+not move again — its `x`/`y` are frozen for the rest of the episode and its
+`speed` is 0. It is still in every frame and still in the classification (last),
+because a stopped car on the circuit is something the cars behind have to deal
+with. Draw it; do not filter it out. `damage` tells you how it got there, and
+the `retire` event says which of `collision`, `barrier` or `off_track` did it.
 
 **Cars can be off the circuit.** Check `flags & 1` before assuming a car is on
 the road; `lateral_offset` can exceed the half width, and a stranded car gets

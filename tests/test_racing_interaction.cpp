@@ -173,6 +173,7 @@ TEST_CASE("overlapping cars are pushed apart, not through each other",
           "[racing][contact]") {
   const Track t = Track::load(track_path());
   ContactConfig cc;
+  DamageConfig dmg;
   VehicleParams vp;
 
   // Side by side, overlapping laterally.
@@ -181,7 +182,7 @@ TEST_CASE("overlapping cars are pushed apart, not through each other",
   REQUIRE(before < vp.width);
 
   std::vector<Contact> out;
-  resolve_contacts(cc, vp, t, 0.01, &cars, &out);
+  resolve_contacts(cc, dmg, vp, t, 0.01, &cars, &out);
 
   REQUIRE(out.size() == 1);
   REQUIRE(cars[0].contact);
@@ -194,6 +195,7 @@ TEST_CASE("overlapping cars are pushed apart, not through each other",
 TEST_CASE("cars that are not touching are left alone", "[racing][contact]") {
   const Track t = Track::load(track_path());
   ContactConfig cc;
+  DamageConfig dmg;
   VehicleParams vp;
 
   // Far enough apart along the road.
@@ -201,7 +203,7 @@ TEST_CASE("cars that are not touching are left alone", "[racing][contact]") {
   const double x0 = cars[0].v.x, x1 = cars[1].v.x;
 
   std::vector<Contact> out;
-  resolve_contacts(cc, vp, t, 0.01, &cars, &out);
+  resolve_contacts(cc, dmg, vp, t, 0.01, &cars, &out);
 
   REQUIRE(out.empty());
   REQUIRE_FALSE(cars[0].contact);
@@ -217,12 +219,13 @@ TEST_CASE("repeated contact resolution converges instead of exploding",
   // 100 Hz between two cars already at the grip limit will do.
   const Track t = Track::load(track_path());
   ContactConfig cc;
+  DamageConfig dmg;
   VehicleParams vp;
 
   std::vector<CarState> cars = pair_at(t, 1000.0, 0.5, 0.3, -0.3);
   std::vector<Contact> out;
   for (int i = 0; i < 200; ++i) {
-    resolve_contacts(cc, vp, t, 0.01, &cars, &out);
+    resolve_contacts(cc, dmg, vp, t, 0.01, &cars, &out);
     for (const CarState& c : cars) {
       REQUIRE(std::isfinite(c.v.x));
       REQUIRE(std::isfinite(c.v.vx));

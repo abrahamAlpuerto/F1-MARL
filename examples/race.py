@@ -113,7 +113,7 @@ def main():
     print(f"feed: {args.fps:g} Hz -> {out_dir}")
 
     wall0 = time.perf_counter()
-    overtakes = contacts = 0
+    overtakes = contacts = retired = 0
     while not env.done:
         if net is not None:
             import torch
@@ -137,6 +137,10 @@ def main():
                       f"into {feed_name(env, e.other)} ({e.value:.2f})")
             elif e.name == "rejoin" and e.value > 0.5:
                 print(f"  [{e.time:6.1f}s] {feed_name(env, e.car)} recovered")
+            elif e.name == "retire":
+                retired += 1
+                print(f"  [{e.time:6.1f}s] RETIRED: {feed_name(env, e.car)} "
+                      f"({e.reason})")
 
     wall = time.perf_counter() - wall0
     if args.live:
@@ -144,13 +148,16 @@ def main():
     feed.write(out_dir, env)
 
     print()
-    print(f"{'':>3}  {'car':<6} {'team':<10} {'laps':>4} {'time':>9} {'best lap':>9}")
+    print(f"{'':>3}  {'car':<6} {'team':<10} {'laps':>4} {'time':>9} "
+          f"{'best lap':>9} {'dmg':>5}  status")
     for idx in env.finish_order():
         car = env.cars[idx]
         t = car.finish_time if car.finished else car.race_time
         best = f"{car.best_lap_time:9.3f}" if car.best_lap_time > 0 else "        -"
+        status = f"DNF ({car.retire_reason})" if car.retired else ""
         print(f"{car.position:>3}. {feed_name(env, idx):<6} "
-              f"{team_name(idx, cfg):<10} {car.lap:>4} {t:9.3f} {best}")
+              f"{team_name(idx, cfg):<10} {car.lap:>4} {t:9.3f} {best} "
+              f"{car.damage * 100:4.0f}%  {status}")
 
     scores = env.team_scores()
     print()
@@ -158,6 +165,7 @@ def main():
         f"{team_name(t * cfg.field.cars_per_team, cfg)} {s}"
         for t, s in enumerate(scores)))
     print(f"\n{overtakes} overtakes, {contacts} notable contacts, "
+          f"{retired} retirement{'' if retired == 1 else 's'}, "
           f"{feed.n_frames} frames over {env.race_time:.1f} s "
           f"(simulated in {wall:.1f} s wall)")
     print(f"written to {out_dir}")

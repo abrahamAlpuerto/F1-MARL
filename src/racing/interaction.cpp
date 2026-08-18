@@ -61,7 +61,27 @@ void shift_lateral(const Track& track, CarState* c, double dy) {
 // racing contact is well under 2.
 constexpr double kSeverityScale = 8.0;
 
+// Damage from a severity, given a threshold below which it is free and the
+// amount charged at full severity. Linear in between, and normalised so that
+// `full` really is what a severity of 1 costs rather than what it costs times
+// some leftover factor of (1 - threshold).
+double damage_from(double severity, double threshold, double full) {
+  if (severity <= threshold) return 0.0;
+  const double span = std::max(1.0 - threshold, 1e-6);
+  return full * (severity - threshold) / span;
+}
+
 }  // namespace
+
+const char* retire_reason_name(int reason) {
+  switch (reason) {
+    case RETIRE_NONE: return "none";
+    case RETIRE_COLLISION: return "collision";
+    case RETIRE_BARRIER: return "barrier";
+    case RETIRE_OFF_TRACK: return "off_track";
+    default: return "unknown";
+  }
+}
 
 // --- wake ------------------------------------------------------------------
 
@@ -115,8 +135,8 @@ void apply_wake(const AeroConfig& cfg, const Track& track,
 
 // --- contact ---------------------------------------------------------------
 
-void resolve_contacts(const ContactConfig& cfg, const VehicleParams& vp,
-                      const Track& track, double dt,
+void resolve_contacts(const ContactConfig& cfg, const DamageConfig& dmg,
+                      const VehicleParams& vp, const Track& track, double dt,
                       std::vector<CarState>* cars, std::vector<Contact>* out) {
   const int n = static_cast<int>(cars->size());
   for (int i = 0; i < n; ++i) {
@@ -200,6 +220,22 @@ void resolve_contacts(const ContactConfig& cfg, const VehicleParams& vp,
       a.contact_severity = std::max(a.contact_severity, severity);
       b.contact_severity = std::max(b.contact_severity, severity);
 
+      // Damage, at a rate, for the length of the step. Both cars again: the
+      // engine cannot tell whose fault it was, and charging only one would
+      // teach a policy that arriving first makes the contact free.
+      if (dmg.enabled) {
+        const double d =
+            damage_from(severity, dmg.contact_threshold, dmg.contact_rate) * dt;
+        // Capped at the threshold that ends a race, so `damage` means what the
+        // feed says it means: 0 is a healthy car and 1 is a broken one, with no
+        // fourth quadrant of numbers past the point of no return. A car that has
+        // already taken the flag keeps being simulated to the end of the race,
+        // so without this it would potter round the slow-down lap accumulating
+        // damage it can no longer retire from.
+        a.damage = std::min(a.damage + d, dmg.retire_threshold);
+        b.damage = std::min(b.damage + d, dmg.retire_threshold);
+      }
+
       if (out) {
         Contact c;
         // `a` is reported as the car behind, which is the one a viewer will
@@ -209,6 +245,62 @@ void resolve_contacts(const ContactConfig& cfg, const VehicleParams& vp,
         c.severity = severity;
         out->push_back(c);
       }
+    }
+  }
+}
+
+// --- the barrier -----------------------------------------------------------
+
+void resolve_barriers(const DamageConfig& cfg, const Track& track,
+                      std::vector<CarState>* cars,
+                      std::vector<BarrierHit>* out) {
+  const int n = static_cast<int>(cars->size());
+  for (int i = 0; i < n; ++i) (*cars)[i].barrier_impact = 0.0;
+  if (!cfg.enabled) return;
+
+  for (int i = 0; i < n; ++i) {
+    CarState& c = (*cars)[i];
+    if (c.retired) continue;
+
+    const double half_w = track.half_width_at(c.f.s);
+    const double limit = half_w + cfg.run_off_width;
+    const double over = std::abs(c.f.e_y) - limit;
+    if (over <= 0.0) continue;
+
+    // Which wall: the one on the side the car has run off towards.
+    const double side = c.f.e_y >= 0.0 ? 1.0 : -1.0;
+
+    // Put the car back on the track side of the wall. Unlike car-to-car
+    // separation this is corrected in full and at once, because a wall does not
+    // negotiate -- a car cannot be a metre inside it for several frames.
+    shift_lateral(track, &c, -side * over);
+
+    const TrackVel v = track_velocity(track, c);
+    const double normal_speed = side * v.lateral;  // > 0 is into the wall
+    if (normal_speed <= 0.0) continue;             // sliding along it, or away
+
+    // Reverse what the wall gives back and absorb the rest.
+    const double dv = (1.0 + cfg.barrier_restitution) * normal_speed;
+    add_lateral_velocity(&c, -side * dv, v.e_psi);
+
+    // And lose forward speed, because you do not hit a wall and drive on. This
+    // one IS a fixed amount rather than a rate: the impact is a single event,
+    // not something sustained across steps.
+    c.v.vx = std::max(0.0, c.v.vx * (1.0 - cfg.barrier_speed_loss));
+
+    const double severity =
+        std::clamp(normal_speed / std::max(cfg.impact_speed_full, 1e-6), 0.0, 1.0);
+    c.barrier_impact = severity;
+    c.damage = std::min(
+        c.damage + damage_from(severity, cfg.barrier_threshold, cfg.barrier_per_hit),
+        cfg.retire_threshold);
+
+    if (out) {
+      BarrierHit h;
+      h.car = c.index;
+      h.normal_speed = normal_speed;
+      h.severity = severity;
+      out->push_back(h);
     }
   }
 }

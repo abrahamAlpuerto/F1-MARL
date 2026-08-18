@@ -184,6 +184,58 @@ is in the loop every step, and every one of them changes how a race turns out.
 - **Surface**: reduced grip off the racing surface, and a recovery for a car
   that gets stranded.
 - **Contact** between cars, resolved on the axis of least penetration.
+- **Barriers** at the far edge of the run-off, and **damage** that accumulates
+  from hitting them or from hitting other cars. Past a threshold a car retires.
+
+### Damage and the DNF
+
+Two sources, and they are deliberately different shapes because the two
+accidents are different shapes.
+
+**Car-to-car damage is a rate**, integrated over the time two cars spend in
+contact above a severity threshold. The obvious alternative — damage per contact
+*event*, scaled by that event's severity — does not survive contact with the
+data. A 3-lap race of twenty scripted cars produces around 288 contact events,
+and the severity attached to an event is the worst single physics step of the
+whole touch. That distribution is saturated: its 90th percentile is 1.0, and a
+third of all events read as a maximum-severity hit. Charge damage against it and
+the entire field retires on lap one. The per-*step* distribution tells the true
+story — a median of 0.021 — because nearly all of those peaks are one-step
+transients while the solver separates two overlapping cars. So the model
+integrates, exactly as `speed_loss` and `yaw_kick` already do, and for the same
+reason (see *Contact effects are rates, not amounts* below). This is the third
+time that lesson has had to be learned in this file.
+
+**Barrier damage is an impulse.** A wall is a single well-defined event with a
+speed attached, so it is charged once, on the component of velocity normal to
+it. Only impacts count: the collision reverses the normal velocity, so a car
+resting against a barrier has nothing left to give and is not billed again, and
+a car sliding *along* one has almost no normal component, which is correct —
+that is a scrape.
+
+The run-off is 30 m wide, and that number is constrained from below: it must
+exceed `RaceConfig::recover_distance` (25 m), or a car pinned against the wall
+could never get far enough off the circuit to satisfy the recovery test and
+would sit there for the rest of the race. The ordering is asserted in the tests.
+
+The consequence of the split is that the realistic causal chain works: a heavy
+hit spins a car, the spin puts it off the circuit, and it arrives at the wall
+sideways with enough speed to end its afternoon. In the calibration races every
+single retirement came that way. Contact alone retiring a car is possible but
+rare, which is also how it looks on a Sunday.
+
+Partial damage is not just a counter ticking toward a DNF — it costs downforce
+and adds drag, so a damaged car is slower in the corners and cannot defend. That
+is deliberately visible: a viewer should be able to see that a car has been in
+the wars without reading a number.
+
+The defaults were fitted against the scripted field rather than chosen. The
+winner's time is 385.6 s against 382.4 s with damage switched off entirely, so
+the model does not tax cars that stay out of trouble; what it does is stretch
+the tail, with the last car home going from 426 s to 509 s. Across the field the
+median car finishes on 0.116 damage, the 90th percentile on 0.716, and the worst
+at terminal — skewed on purpose, so damage collects on the cars that had
+incidents rather than spreading evenly over a field that merely raced closely.
 
 ### What is deliberately not modelled
 
@@ -199,6 +251,9 @@ oversight; each was considered and left out for a reason.
 | Brake temperature and fade | Real, but it would mostly duplicate what the tyre thermal model already expresses |
 | Rain, track evolution, marbles | A weather model existed in the previous engine and was removed with it. Worth adding back if wet races are wanted; it is a day of work, not a rewrite |
 | Pit stops and tyre changes | The consumables all exist, so a stop is a short state change. It is deliberately absent because it is a *strategy* layer, and this is a racing engine |
+| Mechanical failures | Damage is caused, never rolled for. A random engine blow-up would need the RNG inside the physics step, and the determinism guarantee is worth more than the realism would be |
+| Component-level damage | One scalar, not a front wing and a floor and a radiator. The extra fidelity would change which corner a damaged car is slow in; it would not change whether the car is slow |
+| Safety cars, red flags, marshals | A retired car stops where it stopped and the race carries on around it. Neutralisation is a race-control layer, and like pit strategy it is a different problem from racecraft |
 | ERS deployment as a decision | Currently automatic. Making it a third agent action — "when do I spend my battery" — is the obvious next step and changes the action space everywhere, so it was not taken quietly |
 
 ### Where the numbers come from

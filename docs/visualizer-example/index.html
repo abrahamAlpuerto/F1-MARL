@@ -238,16 +238,21 @@ function drawCars() {
     // Fine for sin/cos, which is all a renderer needs; wrap it yourself before
     // comparing or interpolating two headings.
     ctx.rotate(-d.heading);
-    ctx.fillStyle = color;
+    const isOut = ep.has("flags") && ((d.flags | 0) & Flag.Retired);
+    ctx.fillStyle = isOut ? "#4a4f5a" : color;
     // Dirty air dims the car, so a viewer can see who is struggling to follow.
-    ctx.globalAlpha = ep.has("downforce") ? 0.45 + 0.55 * d.downforce : 1;
+    // A car that is out goes grey and translucent instead: it is still drawn,
+    // because a stopped car is something the cars behind have to deal with.
+    ctx.globalAlpha = isOut ? 0.35
+      : (ep.has("downforce") ? 0.45 + 0.55 * d.downforce : 1);
     ctx.fillRect(-carLen / 2 * view.s, -carWid / 2 * view.s,
                  carLen * view.s, carWid * view.s);
     ctx.globalAlpha = 1;
 
     if (ep.has("flags")) {
       const flags = d.flags | 0;
-      if (flags & Flag.Contact) { ctx.strokeStyle = "#ff5a4a"; ctx.lineWidth = 2; }
+      if (flags & Flag.Barrier) { ctx.strokeStyle = "#ffffff"; ctx.lineWidth = 3; }
+      else if (flags & Flag.Contact) { ctx.strokeStyle = "#ff5a4a"; ctx.lineWidth = 2; }
       else if (flags & Flag.OffTrack) { ctx.strokeStyle = "#ffd166"; ctx.lineWidth = 1.5; }
       else if (flags & Flag.DrsOpen) { ctx.strokeStyle = "#5ad1ff"; ctx.lineWidth = 1.5; }
       else ctx.strokeStyle = "rgba(0,0,0,0)";
@@ -271,9 +276,14 @@ function drawBoard() {
       ? `+${d.gap_ahead.toFixed(1)}s` : "—";
     const flags = ep.has("flags") ? (d.flags | 0) : 0;
     const badges = [
+      (flags & Flag.Retired) ? '<span style="color:#ff5a4a">OUT</span>' : "",
       (flags & Flag.DrsOpen) ? '<span style="color:#5ad1ff">DRS</span>' : "",
       (flags & Flag.ErsDeploying) ? '<span style="color:#9be26a">ERS</span>' : "",
     ].filter(Boolean).join(" ");
+    // Damage, as a bar that fills as the car breaks. Guarded like every other
+    // optional column, so an episode written before damage existed still reads.
+    const dmg = ep.has("damage")
+      ? `<td class="gap" title="damage">${(d.damage * 100).toFixed(0)}%</td>` : "";
     const tyre = ep.has("tyre_grip")
       ? `<td class="gap" title="tyre grip">${(d.tyre_grip * 100).toFixed(0)}%</td>` : "";
     const wear = ep.has("tyre_wear_rear")
@@ -283,7 +293,7 @@ function drawBoard() {
       <td><span class="swatch" style="background:${ep.colorOf(car)}"></span>${ep.carInfo(car).name}</td>
       <td>L${(d.lap | 0) + 1}</td>
       <td class="gap">${gap}</td>
-      ${tyre}${wear}
+      ${tyre}${wear}${dmg}
       <td class="gap">${badges}</td>
     </tr>`;
   });

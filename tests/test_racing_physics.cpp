@@ -309,6 +309,10 @@ TEST_CASE("tyres wear at a rate that makes a stint a stint", "[racing][tyres]") 
   EnvConfig c = one_car();
   c.track.episode_distance = -1.0;
   c.track.laps = 2;
+  // Two laps of a car with no steering input, which only gets round because the
+  // recovery mechanism keeps putting it back on the circuit. Damage off so it
+  // survives to wear its tyres out, which is the thing being measured.
+  c.damage.enabled = false;
   auto env = make(c);
   env->reset(0);
 
@@ -545,6 +549,12 @@ TEST_CASE("a full twenty-car race completes with the physics on",
   c.track.episode_distance = -1.0;
   c.track.laps = 1;
   c.seed = 9;
+  // The cars here hold a fixed throttle with no steering, so they only get
+  // round because the recovery mechanism keeps putting them back on the
+  // circuit. With barriers in the world that is twenty cars driving into walls:
+  // all twenty retire inside 901 steps, none of them finish, and this stops
+  // being a test that a full race completes at all. Damage has its own file.
+  c.damage.enabled = false;
   auto env = make(c);
   env->reset(0);
 
@@ -555,8 +565,10 @@ TEST_CASE("a full twenty-car race completes with the physics on",
   for (int i = 0; i < env->n_cars(); ++i) act[i * 2 + 1] = 0.32f + 0.005f * i;
   std::vector<float> rew(env->n_cars());
 
+  int steps = 0;
   while (!env->done()) {
     env->step(act.data(), rew.data(), nullptr);
+    ++steps;
     for (const CarState& car : env->cars()) {
       REQUIRE(std::isfinite(car.v.x));
       REQUIRE(std::isfinite(car.tyre_rear.temperature_c));
@@ -569,4 +581,13 @@ TEST_CASE("a full twenty-car race completes with the physics on",
     }
   }
   REQUIRE(env->cars()[0].fuel_kg < c.fuel.start_kg);
+
+  // The point of the test is the word "completes". Without this the whole thing
+  // passes vacuously the moment something ends the race early -- which is
+  // exactly what happened when barriers were added and every car retired in the
+  // first few seconds. Assert the race really went the distance.
+  REQUIRE(steps > 4000);
+  int finished = 0;
+  for (const CarState& car : env->cars()) finished += car.finished ? 1 : 0;
+  REQUIRE(finished == env->n_cars());
 }

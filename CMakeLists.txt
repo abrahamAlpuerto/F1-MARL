@@ -70,6 +70,7 @@ if(RACING_BUILD_TESTS)
     tests/test_racing_race.cpp
     tests/test_racing_feed.cpp
     tests/test_racing_physics.cpp
+    tests/test_racing_damage.cpp
   )
   target_link_libraries(racing_tests PRIVATE racing_core)
   target_include_directories(racing_tests PRIVATE

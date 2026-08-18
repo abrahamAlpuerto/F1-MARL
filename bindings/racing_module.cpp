@@ -117,6 +117,21 @@ PYBIND11_MODULE(_racing, m) {
       .def_readwrite("yaw_kick", &ContactConfig::yaw_kick)
       .def_readwrite("separation_gain", &ContactConfig::separation_gain);
 
+  py::class_<DamageConfig>(m, "DamageConfig")
+      .def(py::init<>())
+      .def_readwrite("enabled", &DamageConfig::enabled)
+      .def_readwrite("contact_threshold", &DamageConfig::contact_threshold)
+      .def_readwrite("contact_rate", &DamageConfig::contact_rate)
+      .def_readwrite("run_off_width", &DamageConfig::run_off_width)
+      .def_readwrite("impact_speed_full", &DamageConfig::impact_speed_full)
+      .def_readwrite("barrier_threshold", &DamageConfig::barrier_threshold)
+      .def_readwrite("barrier_per_hit", &DamageConfig::barrier_per_hit)
+      .def_readwrite("barrier_restitution", &DamageConfig::barrier_restitution)
+      .def_readwrite("barrier_speed_loss", &DamageConfig::barrier_speed_loss)
+      .def_readwrite("retire_threshold", &DamageConfig::retire_threshold)
+      .def_readwrite("downforce_loss", &DamageConfig::downforce_loss)
+      .def_readwrite("drag_penalty", &DamageConfig::drag_penalty);
+
   py::class_<RewardConfig>(m, "RewardConfig")
       .def(py::init<>())
       .def_readwrite("gamma", &RewardConfig::gamma)
@@ -130,7 +145,8 @@ PYBIND11_MODULE(_racing, m) {
       .def_readwrite("time_penalty", &RewardConfig::time_penalty)
       .def_readwrite("off_track_margin", &RewardConfig::off_track_margin)
       .def_readwrite("off_track_grip", &RewardConfig::off_track_grip)
-      .def_readwrite("terminate_off_track", &RewardConfig::terminate_off_track);
+      .def_readwrite("terminate_off_track", &RewardConfig::terminate_off_track)
+      .def_readwrite("retire_penalty", &RewardConfig::retire_penalty);
 
   py::class_<RaceConfig>(m, "RaceConfig")
       .def(py::init<>())
@@ -232,6 +248,7 @@ PYBIND11_MODULE(_racing, m) {
       .def_readwrite("field", &EnvConfig::field)
       .def_readwrite("aero", &EnvConfig::aero)
       .def_readwrite("contact", &EnvConfig::contact)
+      .def_readwrite("damage", &EnvConfig::damage)
       .def_readwrite("reward", &EnvConfig::reward)
       .def_readwrite("race", &EnvConfig::race)
       .def_readwrite("atmosphere", &EnvConfig::atmosphere)
@@ -412,6 +429,12 @@ PYBIND11_MODULE(_racing, m) {
       .def_readonly("gap_behind", &CarState::gap_behind)
       .def_readonly("contact", &CarState::contact)
       .def_readonly("contact_severity", &CarState::contact_severity)
+      .def_readonly("damage", &CarState::damage)
+      .def_readonly("barrier_impact", &CarState::barrier_impact)
+      .def_readonly("off_track_time", &CarState::off_track_time)
+      .def_property_readonly(
+          "retire_reason",
+          [](const CarState& c) { return retire_reason_name(c.retire_reason); })
       .def_readonly("steer", &CarState::steer)
       .def_readonly("throttle", &CarState::throttle)
       .def_readonly("fuel_kg", &CarState::fuel_kg)
@@ -436,8 +459,12 @@ PYBIND11_MODULE(_racing, m) {
       .def_readonly("other", &RaceEvent::other)
       .def_readonly("value", &RaceEvent::value)
       .def_readonly("lap", &RaceEvent::lap)
+      .def_readonly("reason_code", &RaceEvent::reason)
       .def_property_readonly(
-          "name", [](const RaceEvent& e) { return event_type_name(e.type); });
+          "name", [](const RaceEvent& e) { return event_type_name(e.type); })
+      .def_property_readonly(
+          "reason",
+          [](const RaceEvent& e) { return retire_reason_name(e.reason); });
   ev.attr("OVERTAKE") = int(RaceEvent::OVERTAKE);
   ev.attr("CONTACT") = int(RaceEvent::CONTACT);
   ev.attr("OFF_TRACK") = int(RaceEvent::OFF_TRACK);
@@ -454,6 +481,8 @@ PYBIND11_MODULE(_racing, m) {
       .def_readonly("n_overtakes", &StepInfo::n_overtakes)
       .def_readonly("n_off_track", &StepInfo::n_off_track)
       .def_readonly("n_finished", &StepInfo::n_finished)
+      .def_readonly("n_retired", &StepInfo::n_retired)
+      .def_readonly("mean_damage", &StepInfo::mean_damage)
       .def_readonly("done", &StepInfo::done);
 
   py::class_<RaceEnv>(m, "RaceEnv")

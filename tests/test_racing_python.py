@@ -149,6 +149,13 @@ def episode(tmp_path_factory):
     """One short race, written out, shared by every feed test below."""
     out = tmp_path_factory.mktemp("episode")
     cfg = make_config(teams=2, per_team=2, distance=900.0)
+    # Held at a fixed throttle with no steering, these cars leave the circuit and
+    # are carried round by the recovery mechanism. That is fine for exercising
+    # the feed FORMAT, which is what everything below is about, but with damage
+    # on it is four cars driving into barriers -- they all retire, nobody
+    # finishes, and the tests that check a finish event stop meaning anything.
+    # Damage in the feed has its own test at the bottom of this file.
+    cfg.damage.enabled = False
     env = racing.RaceEnv(cfg, 0)
     env.reset(0)
 
@@ -183,7 +190,8 @@ def test_feed_is_self_describing(episode):
     fields = header["fields"]
     stride = header["stride"]
     assert len(fields) == stride
-    for required in ("x", "y", "z", "heading", "speed", "position", "lap"):
+    for required in ("x", "y", "z", "heading", "speed", "position", "lap",
+                     "damage"):
         assert required in fields
 
     raw = np.fromfile(os.path.join(episode, "frames.f32"), dtype="<f4")
@@ -326,3 +334,101 @@ def test_race_example_runs_end_to_end(tmp_path):
     ep = racing.read_episode(str(out))
     assert ep.n_frames > 100
     assert os.path.exists(out / "stream.jsonl")
+
+
+# --- damage and retirement in the feed --------------------------------------
+
+def test_damage_and_retirement_reach_the_feed(tmp_path):
+    """A DNF has to be legible to a renderer: the flag, the field, the event.
+
+    Four cars held at full lock and full throttle go off, cross the run-off and
+    hit the wall, which is the whole causal chain the damage model exists for.
+    """
+    cfg = make_config(teams=2, per_team=2, distance=4000.0)
+    cfg.reward.terminate_off_track = False
+    assert cfg.damage.enabled
+
+    env = racing.RaceEnv(cfg, 0)
+    env.reset(0)
+    feed = racing.Feed(env, 60.0)
+    feed.attach(env)
+
+    act = np.zeros((env.n_cars, 2), dtype=np.float32)
+    act[:, 0] = 1.0
+    act[:, 1] = 1.0
+
+    reasons = []
+    steps = 0
+    while not env.done and steps < 5000:
+        env.step(act)
+        feed.collect_events(env)
+        for e in env.events:
+            if e.name == "retire":
+                reasons.append(e.reason)
+        steps += 1
+    feed.write(str(tmp_path), env)
+
+    assert reasons, "nobody retired, so this test proves nothing"
+    assert set(reasons) <= {"collision", "barrier", "off_track"}
+
+    ep = racing.read_episode(str(tmp_path))
+    assert ep.header["version"] >= 4
+
+    # Damage is published in 0..1 and never decreases.
+    dmg = ep.field("damage")
+    assert dmg.min() >= 0.0
+    assert dmg.max() <= 1.0 + 1e-6
+    assert np.all(np.diff(dmg, axis=0) >= -1e-6)
+    assert dmg.max() > 0.0
+
+    # The retire events carry a reason, and the classification agrees with them.
+    retires = ep.events_of_type("retire")
+    assert retires
+    for e in retires:
+        assert e["reason"] in ("collision", "barrier", "off_track")
+
+    retired_cars = {e["car"] for e in retires}
+    for row in ep.result["classification"]:
+        if row["car"] in retired_cars:
+            assert row["retired"] is True
+            assert row["retire_reason"] in ("collision", "barrier", "off_track")
+
+    # And the RETIRED flag is set for every frame after the car is out.
+    flags = ep.field("flags").astype(np.int64)
+    for car in retired_cars:
+        set_at = np.argmax((flags[:, car] & 8) != 0)
+        assert (flags[set_at:, car] & 8).all(), "a retired car came back"
+
+
+def test_a_retired_car_stops_moving(tmp_path):
+    cfg = make_config(teams=1, per_team=2, distance=4000.0)
+    cfg.reward.terminate_off_track = False
+    env = racing.RaceEnv(cfg, 0)
+    env.reset(0)
+    feed = racing.Feed(env, 60.0)
+    feed.attach(env)
+
+    act = np.zeros((env.n_cars, 2), dtype=np.float32)
+    act[:, 0] = 1.0
+    act[:, 1] = 1.0
+    steps = 0
+    while not env.done and steps < 5000:
+        env.step(act)
+        steps += 1
+    feed.write(str(tmp_path), env)
+
+    ep = racing.read_episode(str(tmp_path))
+    flags = ep.field("flags").astype(np.int64)
+    x, y = ep.field("x"), ep.field("y")
+    speed = ep.field("speed")
+
+    out = [c for c in range(ep.n_cars) if (flags[-1, c] & 8) != 0]
+    assert out, "expected at least one retirement"
+    for c in out:
+        first = int(np.argmax((flags[:, c] & 8) != 0))
+        if first + 2 >= ep.n_frames:
+            continue
+        after = slice(first + 1, None)
+        assert np.allclose(x[after, c], x[first + 1, c])
+        assert np.allclose(y[after, c], y[first + 1, c])
+        assert np.all(speed[after, c] < 1e-3)

@@ -97,6 +97,33 @@ void RaceEnv::emit(int type, int car, int other, double value, int lap) {
   events_.push_back(e);
 }
 
+// --- retirement ------------------------------------------------------------
+
+void RaceEnv::retire(int car, int reason, int other) {
+  CarState& c = cars_[car];
+  if (c.retired) return;
+
+  c.retired = true;
+  c.retire_reason = reason;
+
+  // The car stops where it stopped. Deliberately not moved out of the way:
+  // wherever it came to rest is where a marshal would find it, and teleporting
+  // it to the edge of the circuit would put a car in the replay somewhere it
+  // never drove. Everything else already skips a retired car -- the wake,
+  // contact, the neighbour observation, the DRS gap -- so it is out of the race
+  // without needing to be out of the way.
+  c.v.vx = 0.0;
+  c.v.vy = 0.0;
+  c.v.r = 0.0;
+  c.drs_open = false;
+  c.drs_armed = false;
+  c.off_track_time = 0.0;
+
+  just_retired_.push_back(car);
+  emit(RaceEvent::RETIRE, car, other, c.damage, c.lap);
+  events_.back().reason = reason;
+}
+
 // --- the grid --------------------------------------------------------------
 
 void RaceEnv::place_on_grid(uint32_t ep) {
@@ -244,6 +271,13 @@ void RaceEnv::physics_step(double dt) {
       u.drag_scale *= 1.0 - cfg_.drs.drag_reduction;
       u.downforce_scale *= 1.0 - cfg_.drs.downforce_loss;
     }
+    // Damage, on top of both. A car that has lost bodywork is slower in the
+    // corners and draggier down the straight, which is the whole reason partial
+    // damage is worth modelling rather than just counting down to a DNF.
+    if (cfg_.damage.enabled && c.damage > 0.0) {
+      u.downforce_scale *= 1.0 - cfg_.damage.downforce_loss * c.damage;
+      u.drag_scale *= 1.0 + cfg_.damage.drag_penalty * c.damage;
+    }
     u.air_density = air_density_;
     u.headwind = headwind_component(cfg_.atmosphere, c.v.psi);
 
@@ -310,7 +344,28 @@ void RaceEnv::physics_step(double dt) {
     update_drs(&c, s_before);
   }
 
-  resolve_contacts(cfg_.contact, cfg_.vehicle, *track_, dt, &cars_, &contacts_);
+  resolve_contacts(cfg_.contact, cfg_.damage, cfg_.vehicle, *track_, dt, &cars_,
+                   &contacts_);
+
+  // The wall, at the physics rate. A car crossing the run-off at 80 m/s covers
+  // three metres per physics step and twelve per policy step, so this is the
+  // slowest it can run and still catch the impact near where it happened.
+  resolve_barriers(cfg_.damage, *track_, &cars_, &barrier_hits_);
+
+  // Retirement is decided here, in the same step the damage was done, so a car
+  // that has just been written off does not get another physics step of driving
+  // out of it. Both sources feed one threshold: it does not matter to a broken
+  // car whether the wall or another car broke it.
+  if (cfg_.damage.enabled) {
+    for (int i = 0; i < n_cars_; ++i) {
+      CarState& c = cars_[i];
+      if (c.retired || c.finished) continue;
+      if (c.damage < cfg_.damage.retire_threshold) continue;
+      // The wall gets the blame if it was involved this step, because a hit
+      // hard enough to retire a car is the thing a viewer just watched.
+      retire(i, c.barrier_impact > 0.0 ? RETIRE_BARRIER : RETIRE_COLLISION, -1);
+    }
+  }
 
   // Positions and gaps are refreshed at the physics rate rather than the policy
   // rate. It costs almost nothing at this field size, and it means the timing
@@ -363,6 +418,8 @@ void RaceEnv::update_drs(CarState* c, double prev_s) {
 void RaceEnv::step(const float* actions, float* rewards, StepInfo* info) {
   events_.clear();
   contacts_.clear();
+  barrier_hits_.clear();
+  just_retired_.clear();
 
   for (int i = 0; i < n_cars_; ++i) {
     cars_[i].steer = std::clamp(static_cast<double>(actions[i * 2 + 0]), -1.0, 1.0);
@@ -399,8 +456,7 @@ void RaceEnv::step(const float* actions, float* rewards, StepInfo* info) {
       // Training mode: a car that leaves the circuit is done. This is what
       // stops a policy learning to cut corners, and stops it spending samples
       // driving through the desert.
-      c.retired = true;
-      emit(RaceEvent::RETIRE, i, -1, 0.0, c.lap);
+      retire(i, RETIRE_OFF_TRACK, -1);
       continue;
     }
 
@@ -542,6 +598,13 @@ void RaceEnv::step(const float* actions, float* rewards, StepInfo* info) {
       if (c.contact) r -= cfg_.reward.contact_penalty * c.contact_severity;
       r -= cfg_.reward.time_penalty;
     }
+    // Charged on the step the car went out, and only then -- which is why it is
+    // keyed off `just_retired_` rather than off `c.retired`, a flag that stays
+    // true for the rest of the race and would bill every remaining step.
+    if (std::find(just_retired_.begin(), just_retired_.end(), i) !=
+        just_retired_.end()) {
+      r -= cfg_.reward.retire_penalty;
+    }
     prev_potential_[i] = potential(c.distance);
 
     // The flag. Paid once, on the step the race ends, so that the last lap is
@@ -571,12 +634,14 @@ void RaceEnv::step(const float* actions, float* rewards, StepInfo* info) {
   for (int i = 0; i < n_cars_; ++i) prev_position_[i] = cars_[i].position;
 
   if (info) {
-    double speed_sum = 0.0, leader = 0.0;
-    int n_off = 0;
+    double speed_sum = 0.0, leader = 0.0, damage_sum = 0.0;
+    int n_off = 0, n_out = 0;
     for (const CarState& c : cars_) {
       speed_sum += c.v.speed();
       leader = std::max(leader, c.distance);
+      damage_sum += c.damage;
       if (c.off_track) ++n_off;
+      if (c.retired) ++n_out;
     }
     info->race_time = race_time_;
     info->leader_distance = leader;
@@ -587,6 +652,8 @@ void RaceEnv::step(const float* actions, float* rewards, StepInfo* info) {
         [](const RaceEvent& e) { return e.type == RaceEvent::OVERTAKE; }));
     info->n_off_track = n_off;
     info->n_finished = n_finished_;
+    info->n_retired = n_out;
+    info->mean_damage = n_cars_ > 0 ? damage_sum / n_cars_ : 0.0;
     info->done = done_;
   }
 }

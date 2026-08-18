@@ -23,6 +23,21 @@
 
 namespace racing {
 
+// Why a car is out. Carried on the car and repeated on the RETIRE event, so a
+// timing screen can say "accident damage" rather than just showing a car
+// vanishing from the classification.
+//
+// Append only: these appear in the feed by name.
+enum RetireReason : int {
+  RETIRE_NONE = 0,
+  RETIRE_COLLISION,   // accumulated damage from contact with other cars
+  RETIRE_BARRIER,     // hit something solid hard enough to end it
+  RETIRE_OFF_TRACK,   // left the circuit where that is configured to be fatal
+  RETIRE_REASONS
+};
+
+const char* retire_reason_name(int reason);
+
 struct CarState {
   // --- identity ----------------------------------------------------------
   int index = 0;  // 0-based position in the field, fixed for the race
@@ -57,7 +72,21 @@ struct CarState {
   // --- track limits ------------------------------------------------------
   bool off_track = false;
   double off_track_time = 0.0;  // s spent continuously beyond the corridor
+
+  // --- damage ------------------------------------------------------------
+  // Accumulated, never repaired: 0 is a car as it left the garage and
+  // DamageConfig::retire_threshold is one that cannot continue. It belongs in
+  // the race group rather than the interaction group precisely because it is
+  // the one thing about an accident that persists after the accident.
+  //
+  // `retired` is terminal. A retired car keeps its last position and is skipped
+  // everywhere -- physics, wake, contact, the neighbour observation, the DRS
+  // gap -- so it is out of the race in every sense except that the feed still
+  // reports where it stopped, which is what a viewer needs to draw it.
+  double damage = 0.0;
+  double barrier_impact = 0.0;  // severity of the wall hit this step, else 0
   bool retired = false;         // out of the race; stops being simulated
+  int retire_reason = 0;        // RetireReason; only meaningful once retired
 
   // --- interaction, recomputed every physics step ------------------------
   // `downforce_factor` is the one the renderer wants: 1.0 is clean air, and

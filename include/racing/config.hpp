@@ -547,6 +547,87 @@ struct ContactConfig {
                                 // teleport in the replay
 };
 
+// --- damage and retirement -------------------------------------------------
+//
+// What turns a bad moment into a DNF. Two sources, and they are deliberately
+// different shapes, because the two accidents are different shapes.
+//
+// **Car to car is a RATE.** The obvious rule -- damage proportional to the
+// severity of a contact event -- does not survive contact with the data. A
+// three-lap race of twenty scripted cars produces ~288 contact events, and the
+// severity reported for an event is the WORST single physics step of the touch,
+// so its distribution is saturated: p90 is 1.0 and a third of all events read as
+// a maximum-severity hit. Keyed on that, every car retires on lap one.
+//
+// The per-step distribution tells the true story -- p50 is 0.021 -- because
+// almost all of those peaks are one-step transients as the solver corrects an
+// overlap. So damage integrates severity over time, exactly as `speed_loss` and
+// `yaw_kick` in ContactConfig already do, and for the same reason. A spike
+// costs nothing; staying locked together at high severity is what breaks a car.
+//
+// The defaults below were fitted to a 20-car scripted race rather than chosen.
+// Measured over 3 laps, with the front of the field as the control: the winner
+// finishes in 385.6 s against 382.4 s with damage switched off entirely, so the
+// model does not tax cars that stay out of trouble. What it does instead is
+// stretch the tail -- the last car home goes from 426 s to 509 s -- because the
+// cars that had accidents limp to the flag, which is what should happen.
+//
+// The resulting spread across the field: the median car finishes on 0.116
+// damage (barely marked), the 90th percentile on 0.716 (visibly slower and
+// unable to defend), and the worst at terminal. Skewed, deliberately -- damage
+// should collect on the cars that had incidents rather than spread evenly over
+// a field that merely raced closely.
+//
+// **The barrier is an IMPULSE.** A wall is a single well-defined event with a
+// speed attached, so it is charged once, on the speed normal to it. This is the
+// realistic path to most DNFs, and the chain runs the way it does in a real
+// race: a heavy hit spins a car, the spin puts it off the circuit, and it
+// arrives at the wall sideways with enough speed to end its afternoon. In the
+// races above, every retirement came this way.
+struct DamageConfig {
+  bool enabled = true;
+
+  // -- car to car ---------------------------------------------------------
+  // Severity below `contact_threshold` is a rub and costs nothing. Rubbing is
+  // most of what close racing is, and a model that charges for it teaches a
+  // policy to leave a car's width everywhere, which is not racing. At 0.30 the
+  // median car finished a race on 0.45 damage, which is a field of wrecks after
+  // an afternoon of ordinary wheel-to-wheel running.
+  double contact_threshold = 0.55;
+  double contact_rate = 1.6;      // damage per severity-second above it
+
+  // -- the barrier --------------------------------------------------------
+  // How much run-off there is beyond the edge of the corridor before there is
+  // something to hit.
+  //
+  // This MUST be larger than RaceConfig::recover_distance, and the ordering is
+  // load-bearing: a car that trickles off and stops in the gravel is recovered
+  // and rejoins, and only a car with enough speed to cross the whole run-off
+  // finds the wall. Put the wall inside the recovery distance and a car pinned
+  // against it can never satisfy the recovery test, so it sits there forever.
+  double run_off_width = 30.0;    // m beyond the corridor edge
+
+  // Severity of a barrier impact is the speed normal to the wall over this.
+  // 25 m/s of closing into a wall is a very large accident.
+  double impact_speed_full = 25.0;  // m/s -> severity 1
+  double barrier_threshold = 0.15;  // brushing the wall costs nothing
+  double barrier_per_hit = 1.20;    // damage at severity 1: more than terminal,
+                                    // so a full-speed hit ends the race there
+  double barrier_restitution = 0.20;  // share of normal speed given back
+  double barrier_speed_loss = 0.55;   // share of FORWARD speed lost in a hit
+
+  // -- consequences -------------------------------------------------------
+  double retire_threshold = 1.0;  // damage at or above this and the car is out
+
+  // What being damaged costs, quoted at damage = 1. A car retires at 1, so
+  // these are approached and never quite reached. Aero damage rather than
+  // mechanical because that is what actually falls off a car in a collision,
+  // and because losing downforce makes a car slower in a way a viewer can see:
+  // it holds up the cars behind it and cannot defend.
+  double downforce_loss = 0.40;
+  double drag_penalty = 0.20;
+};
+
 // --- reward ----------------------------------------------------------------
 //
 // Three terms, and they do different jobs.
@@ -615,6 +696,17 @@ struct RewardConfig {
   double contact_penalty = 2.0;     // per contact, scaled by severity
   double time_penalty = 0.0;        // per policy step; 0 while shaping carries it
 
+  // Paid once, on the step a car retires. A DNF already costs a car everything
+  // it would have earned for the rest of the race, which is most of the signal;
+  // this is on top so that ending your own race is clearly worse than finishing
+  // last, rather than merely equal to it.
+  //
+  // Note what this interacts with: in phase 1 of training,
+  // `terminate_off_track` is on and every excursion is a retirement, so this is
+  // charged on each one. That is the intent -- leaving the circuit should hurt
+  // -- but it is the number to turn down first if early training goes unstable.
+  double retire_penalty = 20.0;
+
   // -- track limits -------------------------------------------------------
   double off_track_margin = 0.5;    // m beyond the corridor edge before it counts
 
@@ -655,6 +747,7 @@ struct EnvConfig {
   FieldConfig field;
   AeroConfig aero;
   ContactConfig contact;
+  DamageConfig damage;
   RewardConfig reward;
   RaceConfig race;
   AtmosphereConfig atmosphere;

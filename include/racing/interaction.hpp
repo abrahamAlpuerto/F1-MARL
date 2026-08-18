@@ -61,9 +61,40 @@ struct Contact {
 // twenty times, and the numbers that look reasonable per contact are lethal
 // per step. Two cars rubbing for a second lost 99% of their speed and the whole
 // field ground to a halt on the exit of Turn 1.
-void resolve_contacts(const ContactConfig& cfg, const VehicleParams& vp,
-                      const Track& track, double dt,
+//
+// Damage is accumulated here too, and for exactly the reason above it is a rate
+// as well. `dmg` is what decides how much a touch costs; see DamageConfig for
+// why a per-event rule measured against this severity does not work.
+void resolve_contacts(const ContactConfig& cfg, const DamageConfig& dmg,
+                      const VehicleParams& vp, const Track& track, double dt,
                       std::vector<CarState>* cars, std::vector<Contact>* out);
+
+// --- the barrier -----------------------------------------------------------
+
+struct BarrierHit {
+  int car = -1;
+  double normal_speed = 0.0;  // m/s into the wall at the moment of impact
+  double severity = 0.0;      // 0 to 1, that speed over impact_speed_full
+};
+
+// Stop cars that have crossed the run-off and reached something solid.
+//
+// Lives here rather than in the environment because it needs exactly the same
+// machinery contact does -- velocities resolved into the track frame, impulses
+// put back into the body frame -- and a second copy of that is a second place
+// for the frames to be confused.
+//
+// Only an impact is charged, not resting against the wall: the impulse reverses
+// the normal velocity, so a car already against the barrier has none left to
+// give and the next step costs it nothing. A car sliding ALONG the wall has
+// almost no normal component either, which is right -- that is a scrape.
+//
+// Called at the physics rate, not the policy rate. At 80 m/s a car covers three
+// metres between policy steps, so a barrier tested four times slower is a
+// barrier a car can be most of the way through before anyone checks.
+void resolve_barriers(const DamageConfig& cfg, const Track& track,
+                      std::vector<CarState>* cars,
+                      std::vector<BarrierHit>* out);
 
 // Race positions, gaps, and lap accounting off the back of `distance`.
 // Positions are 1-based and dense; a retired car keeps the position it held.
