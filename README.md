@@ -72,6 +72,7 @@ Everything that decides how a lap goes is in the loop, every step:
 | aero | downforce and drag, air density from temperature/pressure/humidity, wind, the wake of the car ahead, DRS |
 | powertrain | torque curve, eight-speed box with shift cuts, hybrid that harvests under braking and deploys on throttle within a per-lap allowance |
 | world | fuel burning off as mass, road gradient, run-off grip, car-to-car contact |
+| damage | accumulated from contact and from the barrier at the edge of the run-off; costs downforce, and past a threshold ends the car's race |
 
 Fitted to a real 2024 Bahrain pole lap:
 
@@ -101,7 +102,7 @@ needs care.
 
 The feed is the point. Every car's position, heading, speed, controls, race
 position, gap, aero state, tyre temperatures and wear, fuel, gear, rpm, battery
-and g-forces — 27 fields per car, sampled at 60 Hz of simulated time:
+and g-forces — 28 fields per car, sampled at 60 Hz of simulated time:
 
 ```bash
 python examples/race.py --laps 3 --name demo          # replay
@@ -124,9 +125,9 @@ python -m http.server 8777
 
 The format is self-describing — `episode.json` names every field and its
 stride — so it can grow without breaking a reader that looks fields up by name.
-It already has: the stride went from 16 to 27 when the tyre and powertrain
-physics landed, and every field that existed before is still there under the
-same name.
+It already has, twice: the stride went from 16 to 27 when the tyre and
+powertrain physics landed and from 27 to 28 when damage did, and every field
+that existed before is still there under the same name.
 
 A 3-lap 20-car race at 60 Hz is 56 MB. Drop `--fps` if that is too much.
 

@@ -23,6 +23,7 @@ const char* const kFieldNames[] = {
     "tyre_temp_front", "tyre_temp_rear", "tyre_wear_front", "tyre_wear_rear",
     "tyre_grip", "fuel_kg", "gear", "rpm", "ers_charge",
     "lateral_g", "longitudinal_g",
+    "damage",
 };
 static_assert(sizeof(kFieldNames) / sizeof(kFieldNames[0]) == FRAME_FIELDS,
               "kFieldNames and the FrameField enum have drifted apart");
@@ -51,7 +52,7 @@ constexpr int kDefaultTeamCount =
     static_cast<int>(sizeof(kDefaultTeams) / sizeof(kDefaultTeams[0]));
 
 json event_json(int frame, double t, int type, int car, int other, double value,
-                int lap) {
+                int lap, int reason) {
   json o;
   o["frame"] = frame;
   o["t"] = t;
@@ -60,6 +61,9 @@ json event_json(int frame, double t, int type, int car, int other, double value,
   if (other >= 0) o["other"] = other;
   if (value != 0.0) o["value"] = value;
   o["lap"] = lap;
+  // Only where it means something. A `reason` on an overtake would just be
+  // noise a reader has to learn to ignore.
+  if (type == RaceEvent::RETIRE) o["reason"] = retire_reason_name(reason);
   return o;
 }
 
@@ -157,6 +161,7 @@ void Feed::fill_frame(const RaceEnv& env, float* out) const {
     if (c.wheelspin) flags |= FLAG_WHEELSPIN;
     if (c.lockup) flags |= FLAG_LOCKUP;
     if (c.powertrain.deploying) flags |= FLAG_ERS_DEPLOYING;
+    if (c.barrier_impact > 0.0) flags |= FLAG_BARRIER;
     o[FRAME_FLAGS] = static_cast<float>(flags);
 
     o[FRAME_TYRE_TEMP_FRONT] = static_cast<float>(c.tyre_front.temperature_c);
@@ -173,6 +178,7 @@ void Feed::fill_frame(const RaceEnv& env, float* out) const {
         cap > 0.0 ? c.powertrain.ers_charge_mj / cap : 0.0);
     o[FRAME_LATERAL_G] = static_cast<float>(c.lateral_g);
     o[FRAME_LONGITUDINAL_G] = static_cast<float>(c.longitudinal_g);
+    o[FRAME_DAMAGE] = static_cast<float>(c.damage);
   }
 }
 
@@ -220,13 +226,14 @@ void Feed::collect_events(const RaceEnv& env) {
   // see and which keeps the event list monotonic in frame number.
   const int frame = std::max(0, n_frames_ - 1);
   for (const RaceEvent& e : env.events()) {
-    events_.push_back(Event{frame, e.time, e.type, e.car, e.other, e.value, e.lap});
+    events_.push_back(
+        Event{frame, e.time, e.type, e.car, e.other, e.value, e.lap, e.reason});
     if (stream_ && stream_->is_open()) {
       json line;
       line["type"] = "event";
       line["f"] = frame;
       line["event"] = event_json(frame, e.time, e.type, e.car, e.other, e.value,
-                                 e.lap);
+                                 e.lap, e.reason);
       (*stream_) << line.dump() << "\n";
     }
   }
@@ -316,6 +323,8 @@ std::string Feed::result_json(const RaceEnv& env) const {
     o["best_lap"] = c.best_lap_time;
     o["finished"] = c.finished;
     o["retired"] = c.retired;
+    o["damage"] = c.damage;
+    if (c.retired) o["retire_reason"] = retire_reason_name(c.retire_reason);
     cls.push_back(o);
   }
   j["classification"] = cls;
@@ -360,7 +369,8 @@ void Feed::write(const std::string& dir, const RaceEnv& env) {
 
   json evs = json::array();
   for (const Event& e : events_) {
-    evs.push_back(event_json(e.frame, e.t, e.type, e.car, e.other, e.value, e.lap));
+    evs.push_back(
+        event_json(e.frame, e.t, e.type, e.car, e.other, e.value, e.lap, e.reason));
   }
   j["events"] = evs;
 

@@ -76,6 +76,9 @@ enum FrameField : int {
   FRAME_ERS_CHARGE,        // 0 to 1 of the store
   FRAME_LATERAL_G,
   FRAME_LONGITUDINAL_G,
+
+  // --- appended when damage arrived --------------------------------------
+  FRAME_DAMAGE,            // 0 undamaged, 1 terminal. Never decreases
   FRAME_FIELDS
 };
 
@@ -88,12 +91,16 @@ enum FrameFlag : int {
   FLAG_WHEELSPIN = 32,
   FLAG_LOCKUP = 64,
   FLAG_ERS_DEPLOYING = 128,
+  // Set for the frames in which the car is against a barrier. Brief -- an
+  // impact is over in a step or two -- so a renderer should latch it rather
+  // than expecting it to persist.
+  FLAG_BARRIER = 256,
 };
 
-// 3: the physics fields above were appended, and the flags gained DRS,
-// wheelspin, lockup and hybrid deployment. Additive -- every field that
-// existed at version 2 is still there, at the same name.
-constexpr int kFeedVersion = 3;
+// 4: `damage` appended, FLAG_BARRIER added, and RETIRE events now carry a
+// `reason`. Additive, as every version bump here has been -- a reader that
+// looks fields up by name and ignores flags it does not know keeps working.
+constexpr int kFeedVersion = 4;
 
 struct TeamInfo {
   std::string name;
@@ -152,6 +159,7 @@ class Feed {
     int other;
     double value;
     int lap;
+    int reason;
   };
 
   void fill_frame(const RaceEnv& env, float* out) const;

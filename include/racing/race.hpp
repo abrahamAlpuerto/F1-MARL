@@ -50,6 +50,10 @@ struct RaceEvent {
   int other = -1;
   double value = 0.0;
   int lap = 0;
+  // Only set on RETIRE, where it is a RetireReason. A separate field rather
+  // than an overload of `value`, which on a RETIRE event carries the damage the
+  // car had accumulated -- both are worth knowing and neither implies the other.
+  int reason = RETIRE_NONE;
 };
 
 // Per-race summary of a step, for logging and for the training loop's console
@@ -62,6 +66,8 @@ struct StepInfo {
   int n_overtakes = 0;
   int n_off_track = 0;
   int n_finished = 0;
+  int n_retired = 0;
+  double mean_damage = 0.0;
   bool done = false;
 };
 
@@ -123,6 +129,9 @@ class RaceEnv {
   void update_drs(CarState* c, double prev_s);
   double potential(double distance) const;
   void emit(int type, int car, int other, double value, int lap);
+  // Take a car out of the race. Idempotent, so the several places that can
+  // decide a car is finished do not have to coordinate.
+  void retire(int car, int reason, int other);
 
   EnvConfig cfg_;
   std::shared_ptr<const Track> track_;
@@ -137,7 +146,11 @@ class RaceEnv {
   std::vector<CarState> cars_;
   std::vector<int> team_of_;
   std::vector<Contact> contacts_;
+  std::vector<BarrierHit> barrier_hits_;
   std::vector<RaceEvent> events_;
+  // Cars that retired during the current policy step, so the reward loop can
+  // charge the penalty exactly once without re-scanning for newly-out cars.
+  std::vector<int> just_retired_;
 
   // Pairs of cars that were touching at the end of the previous step, so a
   // sustained scrape reports as one contact rather than one per physics step.

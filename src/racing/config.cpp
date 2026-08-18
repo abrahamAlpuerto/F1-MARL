@@ -121,6 +121,23 @@ void load_contact(const json& j, ContactConfig* c) {
   reject_unknown(j, seen, "contact");
 }
 
+void load_damage(const json& j, DamageConfig* d) {
+  std::set<std::string> seen;
+  take(j, "enabled", &d->enabled, &seen);
+  take(j, "contact_threshold", &d->contact_threshold, &seen);
+  take(j, "contact_rate", &d->contact_rate, &seen);
+  take(j, "run_off_width", &d->run_off_width, &seen);
+  take(j, "impact_speed_full", &d->impact_speed_full, &seen);
+  take(j, "barrier_threshold", &d->barrier_threshold, &seen);
+  take(j, "barrier_per_hit", &d->barrier_per_hit, &seen);
+  take(j, "barrier_restitution", &d->barrier_restitution, &seen);
+  take(j, "barrier_speed_loss", &d->barrier_speed_loss, &seen);
+  take(j, "retire_threshold", &d->retire_threshold, &seen);
+  take(j, "downforce_loss", &d->downforce_loss, &seen);
+  take(j, "drag_penalty", &d->drag_penalty, &seen);
+  reject_unknown(j, seen, "damage");
+}
+
 void load_reward(const json& j, RewardConfig* r) {
   std::set<std::string> seen;
   take(j, "gamma", &r->gamma, &seen);
@@ -135,6 +152,7 @@ void load_reward(const json& j, RewardConfig* r) {
   take(j, "off_track_margin", &r->off_track_margin, &seen);
   take(j, "off_track_grip", &r->off_track_grip, &seen);
   take(j, "terminate_off_track", &r->terminate_off_track, &seen);
+  take(j, "retire_penalty", &r->retire_penalty, &seen);
   reject_unknown(j, seen, "reward");
 }
 
@@ -238,6 +256,7 @@ EnvConfig EnvConfig::from_json_string(const std::string& text) {
   if (j.contains("field")) load_field(j.at("field"), &c.field);
   if (j.contains("aero")) load_aero(j.at("aero"), &c.aero);
   if (j.contains("contact")) load_contact(j.at("contact"), &c.contact);
+  if (j.contains("damage")) load_damage(j.at("damage"), &c.damage);
   if (j.contains("reward")) load_reward(j.at("reward"), &c.reward);
   if (j.contains("race")) load_race(j.at("race"), &c.race);
   if (j.contains("atmosphere")) load_atmosphere(j.at("atmosphere"), &c.atmosphere);
@@ -246,7 +265,7 @@ EnvConfig EnvConfig::from_json_string(const std::string& text) {
   if (j.contains("powertrain")) load_powertrain(j.at("powertrain"), &c.powertrain);
   if (j.contains("drs")) load_drs(j.at("drs"), &c.drs);
   for (const char* k : {"vehicle", "sim", "track", "field", "aero", "contact",
-                        "reward", "race", "atmosphere", "fuel", "tyre",
+                        "damage", "reward", "race", "atmosphere", "fuel", "tyre",
                         "powertrain", "drs"}) {
     seen.insert(k);
   }
@@ -341,6 +360,20 @@ std::string EnvConfig::to_json_string() const {
   ct["yaw_kick"] = contact.yaw_kick;
   ct["separation_gain"] = contact.separation_gain;
 
+  auto& dm = j["damage"];
+  dm["enabled"] = damage.enabled;
+  dm["contact_threshold"] = damage.contact_threshold;
+  dm["contact_rate"] = damage.contact_rate;
+  dm["run_off_width"] = damage.run_off_width;
+  dm["impact_speed_full"] = damage.impact_speed_full;
+  dm["barrier_threshold"] = damage.barrier_threshold;
+  dm["barrier_per_hit"] = damage.barrier_per_hit;
+  dm["barrier_restitution"] = damage.barrier_restitution;
+  dm["barrier_speed_loss"] = damage.barrier_speed_loss;
+  dm["retire_threshold"] = damage.retire_threshold;
+  dm["downforce_loss"] = damage.downforce_loss;
+  dm["drag_penalty"] = damage.drag_penalty;
+
   auto& r = j["reward"];
   r["gamma"] = reward.gamma;
   r["progress_weight"] = reward.progress_weight;
@@ -354,6 +387,7 @@ std::string EnvConfig::to_json_string() const {
   r["off_track_margin"] = reward.off_track_margin;
   r["off_track_grip"] = reward.off_track_grip;
   r["terminate_off_track"] = reward.terminate_off_track;
+  r["retire_penalty"] = reward.retire_penalty;
 
   auto& rc = j["race"];
   rc["recover_after_s"] = race.recover_after_s;

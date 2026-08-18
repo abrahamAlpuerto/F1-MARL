@@ -29,6 +29,10 @@ export const Flag = {
   Wheelspin: 32,
   Lockup: 64,
   ErsDeploying: 128,
+  // Set only for the frame or two of an impact, so latch it rather than
+  // expecting it to persist -- by the time a viewer notices, the car has
+  // already bounced off.
+  Barrier: 256,
 };
 
 export class Episode {
