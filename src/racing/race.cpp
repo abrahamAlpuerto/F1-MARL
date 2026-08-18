@@ -601,8 +601,32 @@ void RaceEnv::step(const float* actions, float* rewards, StepInfo* info) {
     // Charged on the step the car went out, and only then -- which is why it is
     // keyed off `just_retired_` rather than off `c.retired`, a flag that stays
     // true for the rest of the race and would bill every remaining step.
-    if (std::find(just_retired_.begin(), just_retired_.end(), i) !=
-        just_retired_.end()) {
+    //
+    // NOT charged for RETIRE_OFF_TRACK, and that exception is load-bearing.
+    // Leaving the circuit is only terminal when `terminate_off_track` is set,
+    // which is a TRAINING device -- it exists to stop a policy wasting samples
+    // driving through the desert, and it already costs the car every point it
+    // would have earned for the rest of the episode, on top of
+    // `off_track_penalty` for each step it spent out there. Billing the
+    // accident penalty on top of that is not a stronger version of the same
+    // lesson, it is a different and much worse one.
+    //
+    // Measured, because it is not obvious: with the penalty charged on
+    // excursions, phase 1 of the reference training run collapses from 141 kph
+    // to 4 kph over sixty iterations and stays there. An untrained car leaves
+    // the circuit almost immediately, so driving a hundred metres and going off
+    // scores about +5 - 20 = -15 while standing still on the grid scores 0, and
+    // the policy correctly concludes that the best available move is to not
+    // move. With the exception below it climbs to 171 kph over the same sixty
+    // iterations from the same seed.
+    //
+    // A real race sets `terminate_off_track` false and recovers a car that goes
+    // off, so RETIRE_OFF_TRACK never fires there and nothing about racing
+    // changes: a genuine DNF is still a collision or the barrier, and still
+    // costs the full penalty.
+    if (c.retire_reason != RETIRE_OFF_TRACK &&
+        std::find(just_retired_.begin(), just_retired_.end(), i) !=
+            just_retired_.end()) {
       r -= cfg_.reward.retire_penalty;
     }
     prev_potential_[i] = potential(c.distance);

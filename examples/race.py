@@ -52,12 +52,13 @@ def load_policy(path, obs_dim):
     """Load a checkpoint written by train_marl.py."""
     import torch  # imported here so a scripted race needs no torch
 
-    from train_marl import Policy  # noqa: WPS433
+    from train_marl import policy_from_checkpoint  # noqa: WPS433
 
     ckpt = torch.load(path, map_location="cpu", weights_only=False)
-    net = Policy(ckpt["obs_dim"], hidden=ckpt.get("hidden", 256))
-    net.load_state_dict(ckpt["model"])
-    net.eval()
+    # The checkpoint says which architecture it is, so a race does not have to
+    # know or care -- and an old checkpoint from before there was a choice
+    # still loads as the MLP it was.
+    net = policy_from_checkpoint(ckpt)
     if ckpt["obs_dim"] != obs_dim:
         raise SystemExit(
             f"{path} was trained on obs_dim {ckpt['obs_dim']}, but this race "

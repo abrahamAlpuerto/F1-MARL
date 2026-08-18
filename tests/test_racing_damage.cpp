@@ -335,6 +335,40 @@ TEST_CASE("running wide is still survivable with damage on",
   REQUIRE_FALSE(env->cars()[0].retired);
 }
 
+TEST_CASE("leaving the circuit is not charged the accident penalty",
+          "[racing][damage][reward]") {
+  // The exception that keeps training from collapsing. `terminate_off_track` is
+  // a training device: it already costs the car the rest of the episode, and
+  // billing the DNF penalty on top makes not moving the best policy available.
+  // Charged, phase 1 of the reference run falls from 141 kph to 4; excepted, it
+  // climbs to 171 from the same seed.
+  EnvConfig c = one_car();
+  c.reward.terminate_off_track = true;
+  c.reward.retire_penalty = 100.0;
+  c.reward.finish_weight = 0.0;
+  c.reward.off_track_penalty = 0.0;  // so anything large left is the DNF charge
+  auto env = make(c);
+  env->reset(0);
+
+  std::vector<float> act{1.0f, 1.0f};  // straight off the circuit
+  std::vector<float> rew(1);
+
+  bool retired = false;
+  double worst = 0.0;
+  for (int k = 0; k < 300 && !env->done(); ++k) {
+    env->step(act.data(), rew.data(), nullptr);
+    worst = std::min(worst, static_cast<double>(rew[0]));
+    if (env->cars()[0].retired) {
+      retired = true;
+      break;
+    }
+  }
+
+  REQUIRE(retired);
+  REQUIRE(env->cars()[0].retire_reason == RETIRE_OFF_TRACK);
+  REQUIRE(worst > -50.0);  // nothing like the 100 an accident would cost
+}
+
 TEST_CASE("retirement is charged to the reward exactly once",
           "[racing][damage][reward]") {
   EnvConfig c = one_car();

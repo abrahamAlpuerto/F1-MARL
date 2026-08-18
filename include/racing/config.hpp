@@ -696,15 +696,17 @@ struct RewardConfig {
   double contact_penalty = 2.0;     // per contact, scaled by severity
   double time_penalty = 0.0;        // per policy step; 0 while shaping carries it
 
-  // Paid once, on the step a car retires. A DNF already costs a car everything
-  // it would have earned for the rest of the race, which is most of the signal;
-  // this is on top so that ending your own race is clearly worse than finishing
-  // last, rather than merely equal to it.
+  // Paid once, on the step a car retires from an ACCIDENT -- a collision or the
+  // barrier. A DNF already costs a car everything it would have earned for the
+  // rest of the race, which is most of the signal; this is on top so that
+  // ending your own race is clearly worse than finishing last rather than
+  // merely equal to it.
   //
-  // Note what this interacts with: in phase 1 of training,
-  // `terminate_off_track` is on and every excursion is a retirement, so this is
-  // charged on each one. That is the intent -- leaving the circuit should hurt
-  // -- but it is the number to turn down first if early training goes unstable.
+  // Deliberately NOT charged when the reason is RETIRE_OFF_TRACK, which only
+  // happens under `terminate_off_track` -- a training device rather than an
+  // accident. Charging it there makes standing still the best available policy
+  // and training collapses; the measurement and the reasoning are in race.cpp
+  // next to the exception.
   double retire_penalty = 20.0;
 
   // -- track limits -------------------------------------------------------
