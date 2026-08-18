@@ -219,6 +219,81 @@ written a line per frame as it runs.
 
 A 3-lap 20-car race at 60 Hz is about 56 MB. Drop `--fps` if that is too much.
 
+### Damage and DNFs
+
+On by default. Cars accumulate damage from contact with each other and from
+hitting the barrier at the far edge of the run-off; past a threshold they retire
+and take no further part. Damaged cars lose downforce and gain drag, so a car
+that has been in the wars is slower in the corners and cannot defend.
+
+It shows up in the classification, as a damage column and a status:
+
+```
+ 17. F2     Fuchsia       3   433.560   136.840   10%
+ 18. J2     Jade          3   538.760   163.520   98%
+ 19. J1     Jade          2   317.760   132.480  100%  DNF (barrier)
+ 20. S1     Slate         1   187.700   133.680  100%  DNF (barrier)
+```
+
+and in the summary line, alongside the overtake and contact counts:
+
+```
+113 overtakes, 129 notable contacts, 2 retirements, 32326 frames over 538.8 s
+```
+
+Expect roughly the spread above. The defaults were fitted against the scripted
+field rather than chosen, so cars that stay out of trouble are barely marked —
+the winner's time is 385.6 s against 382.4 s with damage switched off entirely.
+What damage changes is the tail: the last car home goes from 426 s to 509 s,
+because the cars that had accidents limp to the flag. Across a field the median
+car finishes on about 12% damage and the 90th percentile on about 72%.
+
+There is deliberately **no `race.py` flag** for any of this. Damage is engine
+configuration, not a race option, so it is set the way every other engine dial
+is set — from Python, or from a JSON config.
+
+```python
+import racing
+cfg = racing.EnvConfig()
+cfg.damage.enabled = False        # the whole model off
+cfg.damage.contact_rate = 1.6     # damage per severity-second of contact
+cfg.damage.run_off_width = 30.0   # metres of run-off before there is a wall
+```
+
+| setting | default | what it does |
+|---|---|---|
+| `enabled` | `True` | turn the whole model off |
+| `contact_threshold` | 0.55 | contact severity below this is a rub and costs nothing |
+| `contact_rate` | 1.6 | damage per severity-second above the threshold |
+| `run_off_width` | 30.0 | metres beyond the corridor edge before there is a barrier |
+| `impact_speed_full` | 25.0 | m/s normal to the wall counting as a maximum-severity hit |
+| `barrier_threshold` | 0.15 | brushing the wall costs nothing |
+| `barrier_per_hit` | 1.20 | damage at full severity — more than terminal, so a flat-out hit ends the race there |
+| `barrier_restitution` | 0.20 | share of normal speed the wall gives back |
+| `barrier_speed_loss` | 0.55 | share of forward speed lost in an impact |
+| `retire_threshold` | 1.0 | damage at or above this and the car is out |
+| `downforce_loss` | 0.40 | downforce lost at full damage |
+| `drag_penalty` | 0.20 | drag added at full damage |
+
+Two constraints are worth knowing before you turn these:
+
+**`run_off_width` must stay larger than `race.recover_distance`** (25 m). A car
+is recovered once it is more than the recovery distance off the circuit; put the
+wall inside that and a car pinned against it can never get far enough out to
+satisfy the test, so it sits there for the rest of the race. A test asserts the
+ordering, so you will find out rather than wonder.
+
+**Contact damage is a rate, not a per-touch charge.** It integrates severity
+over the time two cars are actually touching, which is why `contact_rate` is
+quoted per severity-second. Raising it charges close racing, not just accidents;
+raise `contact_threshold` instead if you want damage concentrated on the genuine
+hits. [`docs/RACING_ENGINE.md`](docs/RACING_ENGINE.md) explains why it has to
+work this way.
+
+Damage reaches the visualizer too — a `damage` field per frame, a `retired` flag,
+and a `retire` event carrying `collision`, `barrier` or `off_track`. See
+[`docs/VISUALIZER_FEED.md`](docs/VISUALIZER_FEED.md).
+
 ---
 
 ## 6. Watching it
@@ -296,6 +371,43 @@ build\Release\racing_bench.exe 256 8
 **Note:** a checkpoint records the observation dimension it was trained on. Race
 it with a field size it was not trained for and `race.py` refuses, rather than
 silently producing nonsense.
+
+### Damage during training
+
+Both phases set `reward.terminate_off_track`, so leaving the circuit ends the
+episode. That is a **training device**, not an accident, and it is deliberately
+not charged `reward.retire_penalty` — only a collision or the barrier is.
+
+That exception is load-bearing, and the reason is worth knowing before you turn
+the penalty back on for excursions. Ending the episode already costs the car
+every point it would have earned for the rest of it, on top of
+`off_track_penalty` per step spent out there. Add the accident penalty as well
+and the arithmetic for an untrained car looks like this: drive a hundred metres
+and go off scores about `+5 − 20 = −15`, while sitting still on the grid scores
+`0`. The policy correctly concludes that the best available move is not to move.
+
+Measured, on the reference run with the same seed either way:
+
+| `retire_penalty` on excursions | phase 1 speed over 60 iterations |
+|---|---|
+| charged | 141 kph → **4 kph**, and it stays there |
+| excepted (current behaviour) | 141 kph → **171 kph** |
+
+A real race sets `terminate_off_track` false and recovers a car that goes off, so
+this never fires there — a genuine DNF is still a collision or the barrier and
+still costs the full penalty. Nothing about racing changed.
+
+If you do want to experiment, `train_marl.py` takes `--retire-penalty` to
+override it for both phases, and damage can be switched off entirely:
+
+```python
+cfg.damage.enabled = False
+```
+
+For scale: `finish_weight` pays up to `2.0 x (n_cars - 1)`, so 38 for winning a
+20-car race, and a place gained or lost is worth 1.0. A retirement at 20.0 is
+therefore comparable to losing twenty places — serious, but not so large that it
+drowns the progress signal.
 
 ---
 
@@ -388,6 +500,23 @@ top of the page really points at a folder containing `episode.json`.
 **Episodes are enormous.**
 Lower `--fps`. The physics runs at 100 Hz, so anything up to 100 is free of
 interpolation and anything below is a straight sampling reduction.
+
+**Everything retires, or the field is a demolition derby.**
+Almost always `damage.contact_threshold` set too low. Contact damage integrates
+over time, so a threshold that lets ordinary wheel-to-wheel running through
+charges every lap of close racing as an accident. At 0.30 the median car
+finished a race on 45% damage; the default of 0.55 puts it at 12%.
+
+**A car sits off the circuit for the rest of the race.**
+`damage.run_off_width` has been set to less than `race.recover_distance`. The
+car is pinned against the wall and can never get far enough off the circuit to
+meet the recovery test. Keep the run-off wider than the recovery distance.
+
+**A car retires and the replay shows it sitting on the racing line.**
+That is correct. A retired car stops where it stopped rather than being moved
+out of the way, and the feed keeps reporting it so a renderer can draw it — the
+cars behind still have to deal with it. Check `flags & 8` and draw it as
+stopped; do not filter it out.
 
 ---
 
