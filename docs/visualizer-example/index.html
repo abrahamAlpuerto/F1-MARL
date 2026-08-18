@@ -1,0 +1,362 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Racing feed — reference viewer</title>
+<style>
+  :root {
+    --bg: #101318;
+    --panel: #171b22;
+    --line: #262c36;
+    --text: #e6e9ef;
+    --muted: #8b95a5;
+    --tarmac: #2a2f38;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  header {
+    display: flex; gap: 12px; align-items: center; flex-wrap: wrap;
+    padding: 10px 16px; border-bottom: 1px solid var(--line); background: var(--panel);
+  }
+  h1 { font-size: 15px; margin: 0 12px 0 0; font-weight: 600; }
+  button, select, input[type=text] {
+    background: #222834; color: var(--text); border: 1px solid var(--line);
+    border-radius: 6px; padding: 5px 10px; font: inherit;
+  }
+  button:hover { background: #2b3240; cursor: pointer; }
+  main { display: grid; grid-template-columns: 1fr 300px; gap: 12px; padding: 12px; }
+  @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+  canvas { width: 100%; background: #0c0f13; border: 1px solid var(--line); border-radius: 8px; }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; }
+  .panel h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .08em;
+              color: var(--muted); margin: 0 0 8px; font-weight: 600; }
+  table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+  td { padding: 3px 2px; border-bottom: 1px solid #1e232c; }
+  td.pos { color: var(--muted); width: 22px; }
+  td.gap { text-align: right; color: var(--muted); }
+  .swatch { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 6px; }
+  #scrub { width: 100%; }
+  #events { max-height: 200px; overflow-y: auto; font-size: 13px; }
+  #events div { padding: 2px 0; color: var(--muted); }
+  #events b { color: var(--text); font-weight: 600; }
+  #status { color: var(--muted); }
+  .err { color: #ff8b7a; padding: 12px 16px; white-space: pre-wrap; font-family: ui-monospace, monospace; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Racing feed — reference viewer</h1>
+  <input id="url" type="text" size="30" value="../../episodes/demo">
+  <button id="load">Load</button>
+  <button id="play">Play</button>
+  <label>speed <select id="rate">
+    <option value="0.25">0.25x</option>
+    <option value="1" selected>1x</option>
+    <option value="4">4x</option>
+    <option value="10">10x</option>
+  </select></label>
+  <span id="status">no episode loaded</span>
+</header>
+
+<div id="error" class="err" hidden></div>
+
+<main>
+  <div>
+    <canvas id="map" width="1100" height="620"></canvas>
+    <input id="scrub" type="range" min="0" max="0" value="0" step="1">
+  </div>
+  <div>
+    <div class="panel">
+      <h2>Classification</h2>
+      <table id="board"></table>
+    </div>
+    <div class="panel" style="margin-top:12px">
+      <h2>Leader telemetry</h2>
+      <table id="telemetry"></table>
+    </div>
+    <div class="panel" style="margin-top:12px">
+      <h2>Events</h2>
+      <div id="events"></div>
+    </div>
+  </div>
+</main>
+
+<script type="module">
+import { Episode, Flag } from "./episode.js";
+
+const $ = (id) => document.getElementById(id);
+const canvas = $("map");
+const ctx = canvas.getContext("2d");
+
+let ep = null;
+let frame = 0;
+let playing = false;
+let lastTick = 0;
+let view = null;
+
+// --- loading ---------------------------------------------------------------
+
+async function load(url) {
+  try {
+    $("error").hidden = true;
+    $("status").textContent = "loading…";
+    ep = await Episode.load(url);
+    frame = 0;
+    $("scrub").max = String(ep.nFrames - 1);
+    view = computeView();
+    $("status").textContent =
+      `${ep.nCars} cars · ${ep.nFrames} frames · ${ep.frameRate} Hz · ` +
+      `${ep.duration.toFixed(1)} s · ${ep.header.track ?? "track"}`;
+    draw();
+  } catch (e) {
+    ep = null;
+    $("error").hidden = false;
+    $("error").textContent = String(e.message ?? e);
+    $("status").textContent = "failed";
+  }
+}
+
+/** Fit the circuit to the canvas once, rather than every frame. */
+function computeView() {
+  if (!ep.track) return { s: 1, ox: 0, oy: 0 };
+  const pts = ep.track.line;
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  for (const [x, y] of pts) {
+    minX = Math.min(minX, x); maxX = Math.max(maxX, x);
+    minY = Math.min(minY, y); maxY = Math.max(maxY, y);
+  }
+  const pad = 40;
+  const s = Math.min((canvas.width - 2 * pad) / (maxX - minX),
+                     (canvas.height - 2 * pad) / (maxY - minY));
+  return {
+    s,
+    ox: pad - minX * s + (canvas.width - 2 * pad - (maxX - minX) * s) / 2,
+    oy: pad + maxY * s + (canvas.height - 2 * pad - (maxY - minY) * s) / 2,
+  };
+}
+
+// World Y grows upward, canvas Y grows downward. Get this wrong and the
+// circuit renders mirrored, which on a roughly symmetric track is easy to miss
+// for a surprisingly long time.
+const sx = (x) => x * view.s + view.ox;
+const sy = (y) => view.oy - y * view.s;
+
+// --- drawing ---------------------------------------------------------------
+
+function draw() {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  if (!ep) return;
+  if (ep.track) drawTrack();
+  drawCars();
+  drawBoard();
+  drawTelemetry();
+  drawEvents();
+  $("scrub").value = String(frame);
+}
+
+function drawTrack() {
+  const { left, right } = ep.trackEdges();
+  const line = ep.track.line;
+
+  ctx.fillStyle = getComputedStyle(document.body).getPropertyValue("--tarmac");
+  ctx.beginPath();
+  left.forEach(([x, y], i) => i ? ctx.lineTo(sx(x), sy(y)) : ctx.moveTo(sx(x), sy(y)));
+  for (let i = right.length - 1; i >= 0; i--) ctx.lineTo(sx(right[i][0]), sy(right[i][1]));
+  ctx.closePath();
+  ctx.fill();
+
+  ctx.strokeStyle = "#3a424f";
+  ctx.lineWidth = 1;
+  for (const edge of [left, right]) {
+    ctx.beginPath();
+    edge.forEach(([x, y], i) => i ? ctx.lineTo(sx(x), sy(y)) : ctx.moveTo(sx(x), sy(y)));
+    ctx.closePath();
+    ctx.stroke();
+  }
+
+  // DRS zones, if the feed carries them. Worth drawing: a viewer who can see
+  // the zones can see why a pass happened where it did.
+  const zones = ep.header.drs_zones ?? [];
+  if (zones.length && ep.track.ds_m) {
+    ctx.strokeStyle = "rgba(90,209,255,0.5)";
+    ctx.lineWidth = 3;
+    for (const z of zones) {
+      const a = Math.round(z.start_s / ep.track.ds_m);
+      const span = Math.round(
+        (((z.end_s - z.start_s) % ep.track.lap_length_m) + ep.track.lap_length_m)
+        % ep.track.lap_length_m / ep.track.ds_m);
+      ctx.beginPath();
+      for (let k = 0; k <= span; k++) {
+        const i = (a + k) % line.length;
+        const p = line[i];
+        k ? ctx.lineTo(sx(p[0]), sy(p[1])) : ctx.moveTo(sx(p[0]), sy(p[1]));
+      }
+      ctx.stroke();
+    }
+  }
+
+  // Start/finish.
+  const i0 = ep.track.start_finish_index ?? 0;
+  ctx.strokeStyle = "#e6e9ef";
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(sx(left[i0][0]), sy(left[i0][1]));
+  ctx.lineTo(sx(right[i0][0]), sy(right[i0][1]));
+  ctx.stroke();
+}
+
+function drawCars() {
+  const carLen = 5.6, carWid = 2.0;
+
+  for (let c = 0; c < ep.nCars; c++) {
+    const d = ep.at(frame, c);
+    const x = sx(d.x), y = sy(d.y);
+    const color = ep.colorOf(c);
+
+    // The wake, if the feed carries one. Drawn behind the car it belongs to, in
+    // the direction it came from, and faded by how strong it is.
+    if (ep.has("wake") && d.wake > 0.02) {
+      ctx.save();
+      ctx.translate(x, y);
+      ctx.rotate(-d.heading);
+      const grad = ctx.createLinearGradient(0, 0, -60 * view.s, 0);
+      grad.addColorStop(0, `rgba(120,170,255,${0.25 * d.wake})`);
+      grad.addColorStop(1, "rgba(120,170,255,0)");
+      ctx.fillStyle = grad;
+      ctx.fillRect(-60 * view.s, -3 * view.s, 60 * view.s, 6 * view.s);
+      ctx.restore();
+    }
+
+    ctx.save();
+    ctx.translate(x, y);
+    // Heading is NOT wrapped to +/-pi -- it accumulates as the car goes round.
+    // Fine for sin/cos, which is all a renderer needs; wrap it yourself before
+    // comparing or interpolating two headings.
+    ctx.rotate(-d.heading);
+    ctx.fillStyle = color;
+    // Dirty air dims the car, so a viewer can see who is struggling to follow.
+    ctx.globalAlpha = ep.has("downforce") ? 0.45 + 0.55 * d.downforce : 1;
+    ctx.fillRect(-carLen / 2 * view.s, -carWid / 2 * view.s,
+                 carLen * view.s, carWid * view.s);
+    ctx.globalAlpha = 1;
+
+    if (ep.has("flags")) {
+      const flags = d.flags | 0;
+      if (flags & Flag.Contact) { ctx.strokeStyle = "#ff5a4a"; ctx.lineWidth = 2; }
+      else if (flags & Flag.OffTrack) { ctx.strokeStyle = "#ffd166"; ctx.lineWidth = 1.5; }
+      else if (flags & Flag.DrsOpen) { ctx.strokeStyle = "#5ad1ff"; ctx.lineWidth = 1.5; }
+      else ctx.strokeStyle = "rgba(0,0,0,0)";
+      ctx.strokeRect(-carLen / 2 * view.s, -carWid / 2 * view.s,
+                     carLen * view.s, carWid * view.s);
+    }
+    ctx.restore();
+
+    ctx.fillStyle = "#e6e9ef";
+    ctx.font = "10px ui-sans-serif, system-ui, sans-serif";
+    ctx.fillText(ep.carInfo(c).name, x + 7, y - 7);
+  }
+}
+
+function drawBoard() {
+  // Every optional column is guarded with has(): a feed written before the
+  // physics fields existed still renders, it just renders less.
+  const rows = ep.leaderboard(frame).map(({ car }) => {
+    const d = ep.at(frame, car);
+    const gap = ep.has("gap_ahead") && d.gap_ahead > 0
+      ? `+${d.gap_ahead.toFixed(1)}s` : "—";
+    const flags = ep.has("flags") ? (d.flags | 0) : 0;
+    const badges = [
+      (flags & Flag.DrsOpen) ? '<span style="color:#5ad1ff">DRS</span>' : "",
+      (flags & Flag.ErsDeploying) ? '<span style="color:#9be26a">ERS</span>' : "",
+    ].filter(Boolean).join(" ");
+    const tyre = ep.has("tyre_grip")
+      ? `<td class="gap" title="tyre grip">${(d.tyre_grip * 100).toFixed(0)}%</td>` : "";
+    const wear = ep.has("tyre_wear_rear")
+      ? `<td class="gap" title="rear tyre wear">${(d.tyre_wear_rear * 100).toFixed(0)}%</td>` : "";
+    return `<tr>
+      <td class="pos">${d.position | 0}</td>
+      <td><span class="swatch" style="background:${ep.colorOf(car)}"></span>${ep.carInfo(car).name}</td>
+      <td>L${(d.lap | 0) + 1}</td>
+      <td class="gap">${gap}</td>
+      ${tyre}${wear}
+      <td class="gap">${badges}</td>
+    </tr>`;
+  });
+  $("board").innerHTML = rows.join("");
+}
+
+/** A readout for whichever car is leading: the physics, per frame. */
+function drawTelemetry() {
+  const lead = ep.leaderboard(frame)[0];
+  if (!lead) return;
+  const d = ep.at(frame, lead.car);
+  const rows = [
+    ["car", ep.carInfo(lead.car).name],
+    ["speed", `${(d.speed * 3.6).toFixed(0)} kph`],
+    ep.has("gear") ? ["gear", `${d.gear | 0}`] : null,
+    ep.has("rpm") ? ["rpm", `${(d.rpm | 0).toLocaleString()}`] : null,
+    ep.has("ers_charge") ? ["battery", `${(d.ers_charge * 100).toFixed(0)}%`] : null,
+    ep.has("fuel_kg") ? ["fuel", `${d.fuel_kg.toFixed(1)} kg`] : null,
+    ep.has("tyre_temp_front") ? ["tyre F/R",
+      `${d.tyre_temp_front.toFixed(0)} / ${d.tyre_temp_rear.toFixed(0)} °C`] : null,
+    ep.has("lateral_g") ? ["g lat/long",
+      `${d.lateral_g.toFixed(1)} / ${d.longitudinal_g.toFixed(1)}`] : null,
+    ["downforce", `${(d.downforce * 100).toFixed(0)}%`],
+  ].filter(Boolean);
+  $("telemetry").innerHTML = rows
+    .map(([k, v]) => `<tr><td style="color:var(--muted)">${k}</td><td class="gap">${v}</td></tr>`)
+    .join("");
+}
+
+function drawEvents() {
+  // Anything with a frame and a type renders. Unknown types are expected --
+  // more will be added -- so this must never throw on one it does not know.
+  const recent = ep.events
+    .filter((e) => e.frame <= frame && e.frame > frame - ep.frameRate * 12)
+    .slice(-14)
+    .reverse();
+  $("events").innerHTML = recent.map((e) => {
+    const who = ep.carInfo(e.car)?.name ?? `#${e.car}`;
+    const other = e.other !== undefined ? (ep.carInfo(e.other)?.name ?? `#${e.other}`) : "";
+    const t = (e.t ?? 0).toFixed(1);
+    let text;
+    switch (e.type) {
+      case "overtake": text = `<b>${who}</b> passes ${other}`; break;
+      case "contact": text = `<b>${who}</b> into ${other} (${(e.value ?? 0).toFixed(2)})`; break;
+      case "lap": text = `<b>${who}</b> lap ${e.lap} in ${(e.value ?? 0).toFixed(3)}s`; break;
+      case "finish": text = `<b>${who}</b> finishes P${e.value ?? "?"}`; break;
+      default: text = `<b>${who}</b> ${e.type}`;
+    }
+    return `<div>${t}s — ${text}</div>`;
+  }).join("");
+}
+
+// --- playback ---------------------------------------------------------------
+
+function tick(now) {
+  requestAnimationFrame(tick);
+  if (!playing || !ep) { lastTick = now; return; }
+  const rate = parseFloat($("rate").value);
+  const advance = ((now - lastTick) / 1000) * ep.frameRate * rate;
+  if (advance < 1) return;
+  lastTick = now;
+  frame = Math.min(ep.nFrames - 1, frame + Math.floor(advance));
+  if (frame >= ep.nFrames - 1) playing = false;
+  draw();
+}
+requestAnimationFrame(tick);
+
+$("load").onclick = () => load($("url").value);
+$("play").onclick = () => { playing = !playing; lastTick = performance.now(); };
+$("scrub").oninput = (e) => { frame = parseInt(e.target.value, 10); draw(); };
+window.addEventListener("resize", () => { if (ep) { view = computeView(); draw(); } });
+
+load($("url").value);
+</script>
+</body>
+</html>

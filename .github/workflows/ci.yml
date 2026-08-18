@@ -1,0 +1,96 @@
+name: CI
+
+# The determinism tests are in CI from the first commit and stay there. A replay
+# that is only bit-exact on the machine that wrote it is worth nothing -- the
+# visualizer feed is a separate pass over the same seed, so if the engine drifts
+# the race a viewer watches is not the race that was scored.
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build-and-test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # The id is required: `steps.setup-python.outputs` below resolves to
+      # nothing without it, and the Configure step would silently fall back to
+      # whatever `python` happens to be on PATH -- which is not necessarily the
+      # interpreter pybind11 was installed into.
+      - uses: actions/setup-python@v5
+        id: setup-python
+        with:
+          python-version: "3.12"
+
+      - name: Install python build deps
+        run: python -m pip install --upgrade pip pybind11 pytest numpy
+
+      - name: Configure
+        run: >
+          cmake -S . -B build
+          -DCMAKE_BUILD_TYPE=Release
+          -DPython_EXECUTABLE=${{ steps.setup-python.outputs.python-path }}
+
+      - name: Build
+        run: cmake --build build --config Release --parallel
+
+      - name: C++ tests
+        run: ctest --test-dir build --output-on-failure -C Release
+
+      # Explicit re-runs of the guarantees that cannot be retrofitted, tagged so
+      # a failure names the one that broke rather than just "tests failed".
+      - name: Determinism and format gates
+        shell: bash
+        run: |
+          BIN=build/racing_tests
+          [ -f "$BIN" ] || BIN=build/Release/racing_tests.exe
+          "$BIN" "[determinism]"
+          "$BIN" "[feed]"
+          "$BIN" "[aero]"
+          "$BIN" "[contact]"
+
+      - name: Track rebuilds from telemetry
+        shell: bash
+        run: |
+          python tools/build_track.py --out /tmp/refit_track.json
+          python - <<'PY'
+          import json
+          a = json.load(open('data/tracks/bahrain.json'))
+          b = json.load(open('/tmp/refit_track.json'))
+          assert abs(a['lap_length_m'] - b['lap_length_m']) < 1.0, "track length drifted"
+          assert a['n'] == b['n']
+          print(f"track reproduces: {b['lap_length_m']:.2f} m, "
+                f"deviation p90 {b['_provenance']['perp_deviation_p90_m']} m")
+          PY
+
+      - name: Python tests
+        shell: bash
+        run: python -m pytest tests/ -v
+
+      # A whole race with the scripted field, end to end, writing the feed. This
+      # is the check that the thing a person actually runs still works -- unit
+      # tests pass happily while the race falls apart at the first corner.
+      - name: Race a scripted field and check the feed
+        shell: bash
+        run: python examples/race.py --laps 1 --seed 5 --name ci --live
+
+      - name: Throughput
+        shell: bash
+        run: |
+          BIN=build/racing_bench
+          [ -f "$BIN" ] || BIN=build/Release/racing_bench.exe
+          "$BIN" 256 4
+
+      - name: Vehicle stays calibrated
+        shell: bash
+        run: |
+          BIN=build/racing_calibrate
+          [ -f "$BIN" ] || BIN=build/Release/racing_calibrate.exe
+          "$BIN"

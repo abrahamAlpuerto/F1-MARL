@@ -1,0 +1,20 @@
+# Normalise line endings. The engine is developed on Windows and CI runs on
+# Linux and macOS too; without this the whole tree shows up as modified the
+# first time someone checks it out on another platform.
+* text=auto eol=lf
+
+# Windows-only tooling keeps CRLF.
+*.bat  text eol=crlf
+*.cmd  text eol=crlf
+
+# Vendored headers: leave exactly as upstream shipped them so the files can be
+# diffed against a fresh download to verify they are unmodified.
+third_party/** -text -diff linguist-vendored
+
+# The recorded race log is data, not source. Keep it out of language stats and
+# out of diffs -- a one-line change produces a 1,400-line diff otherwise.
+examples/*.jsonl -diff linguist-generated
+
+# The calibration output is generated, but small and worth reviewing by hand
+# when it changes, so it keeps normal diffing.
+data/bahrain.json linguist-generated

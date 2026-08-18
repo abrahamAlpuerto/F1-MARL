@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=64", "wheel", "pybind11>=2.11"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "racing"
+version = "0.2.0"
+description = "Teams of AI cars racing each other, with a feed for a visualizer"
+requires-python = ">=3.9"
+dependencies = ["numpy>=1.22"]
+
+[project.optional-dependencies]
+# Training only. The engine, the scripted drivers and the feed need none of it.
+train = ["torch>=2.0"]
+# Rebuilding the circuit from telemetry. Pulls the timing API over the network.
+telemetry = ["fastf1>=3.0", "pandas>=2.0"]
+dev = ["pytest>=7.0"]
+
+[tool.setuptools]
+package-dir = {"" = "python"}
+packages = ["racing"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]

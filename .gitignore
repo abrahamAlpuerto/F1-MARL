@@ -1,0 +1,42 @@
+# Build output
+build/
+*.pyd
+*.so
+*.dylib
+*.lib
+*.obj
+.claude/
+
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+.pytest_cache/
+
+
+# Virtualenvs
+.venv/
+
+# FastF1 session downloads. Large, and regenerated on demand by
+# tools/extract_circuit.py -- the extracted telemetry (data/bahrain_track.json)
+# is what gets committed, not the raw timing data.
+.fastf1_cache/
+
+# Training runs and generated episodes. Checkpoints are large and an episode is
+# reproducible from its seed, so neither belongs in git.
+runs/
+episodes/
+*.jsonl
+
+# The native module lands inside the package so `import racing` works from a
+# source tree. It is a build artefact all the same.
+python/racing/_racing*.pyd
+python/racing/_racing*.so
+
+# NOTE: third_party/ IS committed. Vendoring nlohmann/json and Catch2 keeps
+# `git clone && cmake --build` working with no network access, which is the
+# whole point of having no external runtime dependencies.
+#
+# So is data/tracks/bahrain.json, even though tools/build_track.py generates it
+# from data/bahrain_track.json: it is small, and it means a fresh clone can
+# build and race without numpy or a network connection.
