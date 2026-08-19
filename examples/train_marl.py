@@ -32,6 +32,20 @@ see race_phase_config.
 Skipping phase 1 does eventually work and takes far longer: a policy that
 cannot get round Turn 1 learns nothing about racecraft, because it never
 survives long enough to be near anyone.
+
+THAT IS TRUE OF THE DEFAULT OBSERVATION AND FALSE OF THE SENSOR ONE, which is
+worth knowing before reaching for --observation sensor. Phase 1 races a single
+car, so with rays 60% of the observation is CONSTANT throughout it: the fifteen
+car-ray channels sit at 1.0 and all twenty neighbour slots at 0.0. Phase 2 then
+switches thirty-five of fifty-eight inputs from constants to live signals,
+against weights that spent hundreds of iterations learning they were constants.
+Under Frenet the same figure is 39% and the driving-relevant inputs -- heading
+error, curvature -- do not change character at all, which is why the curriculum
+helps there and wrecks the sensor policy.
+
+Measured, same seed: sensor phase 2 collapses to 0.2 kph after phase 1, and
+climbs steadily from 64 to 123 kph with --drive-iters 0. So use --drive-iters 0
+with sensor mode, or give phase 1 a full field so nothing is constant.
 """
 
 from __future__ import annotations

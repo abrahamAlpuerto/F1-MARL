@@ -155,6 +155,10 @@ class RaceEnv {
   // Cars that retired during the current policy step, so the reward loop can
   // charge the penalty exactly once without re-scanning for newly-out cars.
   std::vector<int> just_retired_;
+  // Scratch for the sensor observation: which cars are near enough to block a
+  // ray. A member so the per-observation gather does not allocate.
+  mutable std::vector<int> occluders_;
+  mutable std::vector<double> occluder_bearing_, occluder_half_angle_;
 
   // Pairs of cars that were touching at the end of the previous step, so a
   // sustained scrape reports as one contact rather than one per physics step.

@@ -289,6 +289,12 @@ PYBIND11_MODULE(_racing, m) {
       .def_property_readonly("reference_lap_time", &Track::reference_lap_time)
       .def("kappa_at", &Track::kappa_at)
       .def("half_width_at", &Track::half_width_at)
+      .def("cast_ray", &Track::cast_ray, py::arg("px"), py::arg("py"),
+           py::arg("dx"), py::arg("dy"), py::arg("max_range"),
+           py::arg("s_hint"),
+           "Distance to the edge of the corridor along a direction. Track "
+           "geometry only -- other cars do not block this; the sensor "
+           "observation applies them on top.")
       .def("z_at", &Track::z_at)
       .def("telemetry_speed_at", &Track::telemetry_speed_at)
       .def("wrap_s", &Track::wrap_s)

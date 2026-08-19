@@ -476,8 +476,8 @@ def test_sensor_observation_withholds_the_reference_line():
 
     assert sensor.observation_mode == racing.ObservationConfig.SENSOR
     assert frenet.observation_mode == racing.ObservationConfig.FRENET
-    # 4 own + n_rays + 2 context + 2 aero + 5 per neighbour.
-    expect = 4 + cfg2.observation.n_rays + 2 + 2 + 5 * cfg2.race.n_neighbours
+    # 4 own + 2 per beam (road, cars) + 2 context + 2 aero + 5 per neighbour.
+    expect = 4 + 2 * cfg2.observation.n_rays + 2 + 2 + 5 * cfg2.race.n_neighbours
     assert sensor.obs_dim == expect
     assert sensor.obs_dim != frenet.obs_dim
 
@@ -499,7 +499,9 @@ def test_sensor_rays_see_the_road():
             break
         o = env.observe()
         assert np.isfinite(o).all()
-        rays = o[:, 4:4 + n_rays]
+        # Beams are interleaved: road at 4+2q, nearest car at 4+2q+1. This test
+        # is about the road channel.
+        rays = o[:, 4:4 + 2 * n_rays:2]
         # Normalised, so a ray is never negative and never past its range.
         assert rays.min() >= 0.0
         assert rays.max() <= 1.0 + 1e-6
@@ -538,3 +540,82 @@ def test_sensor_observation_is_deterministic():
     a, b = run(), run()
     assert a.shape == b.shape
     assert np.array_equal(a, b)
+
+
+def test_sensor_rays_are_blocked_by_other_cars():
+    """A car in front has to occlude the beam looking at it.
+
+    Without this the sensor actively lies: the centre beam reports clear road
+    straight through the gearbox of the car being followed, while the neighbour
+    slots say a car is right there. A policy then has to learn to disbelieve its
+    own eyes, and in practice it does not -- phase 2 refused to converge until
+    cars occluded rays, oscillating between 13 and 115 kph for 1200 iterations.
+    """
+    cfg = make_config(teams=1, per_team=2, distance=900.0)
+    cfg.observation.mode = racing.ObservationConfig.SENSOR
+    cfg.track.grid_spacing = 12.0
+    cfg.track.grid_stagger = 0.0  # nose to tail; the grid staggers by default
+    env = racing.RaceEnv(cfg, 0)
+    env.reset(1)
+
+    n_rays = cfg.observation.n_rays
+    q = n_rays // 2
+    road_i, car_i = 4 + 2 * q, 4 + 2 * q + 1
+    obs = env.observe()
+
+    assert obs[1, car_i] < obs[0, car_i], "the follower did not see the car ahead"
+
+    # It reads roughly the real gap: 12 m between centres, less half a car
+    # length at each end.
+    gap_m = obs[1, car_i] * cfg.observation.ray_range
+    assert gap_m == pytest.approx(12.0 - cfg.vehicle.length, abs=1.0)
+
+    # And crucially the ROAD channel is untouched by the car sitting on it.
+    # Blending the two blinds a following car to the corner ahead, which is
+    # what stopped phase 2 converging.
+    assert obs[1, road_i] == pytest.approx(obs[0, road_i], abs=0.05)
+
+
+def test_sensor_sees_a_retired_car():
+    """A wreck is exactly the obstacle a sensor exists to notice.
+
+    Retired cars are skipped by the neighbour slots -- they are out of the race
+    -- but they are still sitting on the circuit, so the rays must find them.
+
+    The run-off is narrowed for this test so the wreck comes to rest beside the
+    road rather than thirty metres into the desert, which is the only way to
+    make the encounter reliable: where a crashed car ends up is not something a
+    test gets to choose.
+    """
+    cfg = make_config(teams=1, per_team=2, distance=4000.0)
+    cfg.observation.mode = racing.ObservationConfig.SENSOR
+    cfg.track.grid_spacing = 25.0
+    cfg.track.grid_stagger = 0.0
+    cfg.reward.terminate_off_track = False
+    cfg.damage.run_off_width = 2.0
+    env = racing.RaceEnv(cfg, 0)
+    env.reset(1)
+
+    n_rays = cfg.observation.n_rays
+    car_channel = slice(5, 4 + 2 * n_rays, 2)
+
+    act = np.zeros((env.n_cars, 2), dtype=np.float32)
+    act[0] = (1.0, 1.0)
+    steps = 0
+    while not env.done and steps < 600 and not env.cars[0].retired:
+        env.step(act)
+        steps += 1
+    assert env.cars[0].retired
+
+    act[:] = 0.0
+    act[1] = (0.0, 0.35)
+    closest = 1.0
+    for _ in range(400):
+        if env.done:
+            break
+        obs = env.observe()
+        assert np.isfinite(obs).all()
+        closest = min(closest, float(obs[1, car_channel].min()))
+        env.step(act)
+
+    assert closest < 1.0, "a retired car never registered on the sensor"

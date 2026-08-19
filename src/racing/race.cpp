@@ -26,6 +26,42 @@ constexpr double kRelSpeedScale = 20.0;   // m/s, for closing speeds
 
 inline float f(double v) { return static_cast<float>(v); }
 
+// Distance along a ray to an oriented rectangle -- a car -- or -1 for a miss.
+//
+// A slab test in the box's own frame. Cars have to occlude the sensor rays or
+// the observation is actively lying: the beam looking straight ahead would
+// report clear road through the gearbox of the car being followed, while the
+// neighbour slots said otherwise, and a policy would have to learn to
+// disbelieve its own eyes.
+inline double ray_hits_box(double px, double py, double dx, double dy,
+                           double cx, double cy, double cpsi,
+                           double half_len, double half_wid) {
+  const double c = std::cos(-cpsi), s = std::sin(-cpsi);
+  const double ox = px - cx, oy = py - cy;
+  const double lx = ox * c - oy * s, ly = ox * s + oy * c;
+  const double ldx = dx * c - dy * s, ldy = dx * s + dy * c;
+
+  double tmin = 0.0, tmax = 1e30;
+  if (std::abs(ldx) < 1e-12) {
+    if (lx < -half_len || lx > half_len) return -1.0;
+  } else {
+    double t1 = (-half_len - lx) / ldx, t2 = (half_len - lx) / ldx;
+    if (t1 > t2) std::swap(t1, t2);
+    tmin = std::max(tmin, t1);
+    tmax = std::min(tmax, t2);
+  }
+  if (std::abs(ldy) < 1e-12) {
+    if (ly < -half_wid || ly > half_wid) return -1.0;
+  } else {
+    double t1 = (-half_wid - ly) / ldy, t2 = (half_wid - ly) / ldy;
+    if (t1 > t2) std::swap(t1, t2);
+    tmin = std::max(tmin, t1);
+    tmax = std::min(tmax, t2);
+  }
+  if (tmax < tmin || tmax < 0.0) return -1.0;
+  return tmin;
+}
+
 inline double wrap_pi(double a) {
   constexpr double kTwoPi = 6.283185307179586;
   a = std::fmod(a + 3.141592653589793, kTwoPi);
@@ -78,9 +114,9 @@ RaceEnv::RaceEnv(EnvConfig cfg, std::shared_ptr<const Track> track,
 
 int RaceEnv::obs_dim() const {
   if (cfg_.observation.mode == ObservationConfig::SENSOR) {
-    // own dynamics (4) + rays (R) + race context (2) + aero (2)
-    // + neighbours (5 each). No lap position: see ObservationConfig.
-    return 4 + cfg_.observation.n_rays + 2 + 2 + 5 * cfg_.race.n_neighbours;
+    // own dynamics (4) + rays (2 per beam: road, then cars) + race context (2)
+    // + aero (2) + neighbours (5 each). No lap position: see ObservationConfig.
+    return 4 + 2 * cfg_.observation.n_rays + 2 + 2 + 5 * cfg_.race.n_neighbours;
   }
   // own dynamics (4) + track relative (2) + curvature lookahead (K)
   // + race context (3) + aero (2) + neighbours (5 each)
@@ -817,12 +853,73 @@ void RaceEnv::observe_sensor(float* out) const {
     // sensor should say so.
     const double nose_x = c.v.x + 0.5 * cfg_.vehicle.length * std::cos(c.v.psi);
     const double nose_y = c.v.y + 0.5 * cfg_.vehicle.length * std::sin(c.v.psi);
+
+    // Which cars are close enough to occlude anything. Gathered once for this
+    // observer rather than rescanned for every beam, and it includes RETIRED
+    // cars on purpose -- a car stopped where it crashed is exactly the obstacle
+    // a sensor exists to notice, even though the neighbour slots below skip it.
+    const double half_len = 0.5 * cfg_.vehicle.length;
+    const double half_wid = 0.5 * cfg_.vehicle.width;
+    // Radius of a circle that certainly contains the car's rectangle. Used only
+    // to bound which beams could possibly touch it.
+    const double car_radius = std::sqrt(half_len * half_len + half_wid * half_wid);
+
+    occluders_.clear();
+    occluder_bearing_.clear();
+    occluder_half_angle_.clear();
+    for (int j = 0; j < n_cars_; ++j) {
+      if (j == i) continue;
+      const double ddx = cars_[j].v.x - nose_x;
+      const double ddy = cars_[j].v.y - nose_y;
+      const double d2 = ddx * ddx + ddy * ddy;
+      if (d2 > (range + car_radius) * (range + car_radius)) continue;
+      const double d = std::sqrt(d2);
+      occluders_.push_back(j);
+      occluder_bearing_.push_back(wrap_pi(std::atan2(ddy, ddx) - c.v.psi));
+      // How wide that car subtends from here. A beam outside this cannot hit
+      // it, which is what keeps the per-beam work at one or two boxes instead
+      // of nineteen -- the difference between the sensor keeping up with
+      // training and not.
+      occluder_half_angle_.push_back(
+          d > car_radius ? std::asin(car_radius / d) : 3.15);
+    }
+
+    // TWO channels per beam, and the separation is the whole point.
+    //
+    // A single blended channel -- nearest of road-edge-or-car -- was tried and
+    // is much worse than it sounds. Measured over 40,000 car-observations of a
+    // 20-car race, a car occludes at least one beam 67% of the time and the
+    // CENTRE beam 37% of the time. So for more than a third of its life the
+    // policy's most important sensor is looking at bodywork and learns nothing
+    // about where the road goes, with no memory to recover it. Phase 1, alone
+    // on the circuit, converged; phase 2 collapsed.
+    //
+    // Splitting them fixes that and is the more honest model besides: a driver
+    // sees the car ahead AND knows the corner is still there behind it. Depth
+    // perception separates an obstacle from the road it is sitting on.
     for (int q = 0; q < n_rays; ++q) {
       const double frac = n_rays > 1 ? static_cast<double>(q) / (n_rays - 1) : 0.5;
-      const double a = c.v.psi + (frac - 0.5) * fov;
-      const double dist = track_->cast_ray(nose_x, nose_y, std::cos(a),
-                                           std::sin(a), range, c.f.s);
-      o[k++] = f(dist / range);
+      const double rel = (frac - 0.5) * fov;
+      const double a = c.v.psi + rel;
+      const double ax = std::cos(a), ay = std::sin(a);
+
+      // Channel 1: the road, always, whatever is parked on it.
+      const double road = track_->cast_ray(nose_x, nose_y, ax, ay, range, c.f.s);
+      o[k++] = f(road / range);
+
+      // Channel 2: the nearest car along this beam, or nothing there.
+      double car = range;
+      for (size_t m = 0; m < occluders_.size(); ++m) {
+        if (std::abs(wrap_pi(occluder_bearing_[m] - rel)) >
+            occluder_half_angle_[m]) {
+          continue;
+        }
+        const CarState& other = cars_[occluders_[m]];
+        const double t = ray_hits_box(nose_x, nose_y, ax, ay, other.v.x,
+                                      other.v.y, other.v.psi, half_len, half_wid);
+        if (t >= 0.0 && t < car) car = t;
+      }
+      o[k++] = f(car / range);
     }
 
     // --- race context ------------------------------------------------------
