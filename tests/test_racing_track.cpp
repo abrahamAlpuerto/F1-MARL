@@ -151,3 +151,100 @@ TEST_CASE("the model's speed envelope brackets the real trace",
   }
   REQUIRE(static_cast<double>(above) / t.n() > 0.7);
 }
+
+// --- what a car can see ------------------------------------------------------
+
+TEST_CASE("a ray to the edge reads the corridor half width",
+          "[racing][track][sensor]") {
+  // The sensor observation is only honest if the wall it reports is the wall
+  // the physics penalises. If these two ever drift apart, a policy learns to
+  // respect an edge that is not there.
+  const Track t = load();
+  for (double s : {150.0, 1500.0, 3000.0, 4800.0}) {
+    double x, y, th;
+    t.pose_at(s, &x, &y, &th);
+    const double w = t.half_width_at(s);
+    const double left = t.cast_ray(x, y, -std::sin(th), std::cos(th), 200.0, s);
+    const double right = t.cast_ray(x, y, std::sin(th), -std::cos(th), 200.0, s);
+    // The edges are polylines through the sampled points, so a ray crosses a
+    // chord rather than the arc. A few millimetres at 2.6 m spacing.
+    REQUIRE(left == Approx(w).margin(0.02));
+    REQUIRE(right == Approx(w).margin(0.02));
+  }
+}
+
+TEST_CASE("moving across the track trades one edge against the other",
+          "[racing][track][sensor]") {
+  const Track t = load();
+  const double s = 1500.0;
+  double x, y, th;
+  t.pose_at(s, &x, &y, &th);
+  const double w = t.half_width_at(s);
+
+  double prev_left = 1e9;
+  for (double frac : {-0.6, -0.3, 0.0, 0.3, 0.6}) {
+    double px, py;
+    t.to_world(s, frac * w, &px, &py);
+    const double l = t.cast_ray(px, py, -std::sin(th), std::cos(th), 200.0, s);
+    const double r = t.cast_ray(px, py, std::sin(th), -std::cos(th), 200.0, s);
+    // Whatever one side gains the other gives up: the road does not get wider
+    // because the car moved across it.
+    REQUIRE(l + r == Approx(2.0 * w).margin(0.05));
+    REQUIRE(l < prev_left);  // moving left shortens the ray to the left edge
+    prev_left = l;
+  }
+}
+
+TEST_CASE("a ray that stays on the road returns its full range",
+          "[racing][track][sensor]") {
+  // Down the main straight nothing should be hit within a short range, so the
+  // sensor saturates rather than inventing a wall.
+  const Track t = load();
+  const double s = 100.0;
+  double x, y, th;
+  t.pose_at(s, &x, &y, &th);
+  REQUIRE(t.cast_ray(x, y, std::cos(th), std::sin(th), 30.0, s) == Approx(30.0));
+
+  // And a ray pointing across a corner finds one well inside its range.
+  double cx, cy, cth;
+  t.pose_at(1500.0, &cx, &cy, &cth);
+  const double ahead =
+      t.cast_ray(cx, cy, std::cos(cth), std::sin(cth), 200.0, 1500.0);
+  REQUIRE(ahead > 5.0);
+  REQUIRE(ahead < 200.0);
+}
+
+TEST_CASE("casting is independent of the arc-length hint",
+          "[racing][track][sensor]") {
+  // The hint only bounds the search window. If a stale or sloppy hint changed
+  // the answer, a car that had just crossed the line would see a different
+  // track from the one it was on.
+  const Track t = load();
+  const double s = 2600.0;
+  double x, y, th;
+  t.pose_at(s, &x, &y, &th);
+  const double dirx = std::cos(th + 0.6), diry = std::sin(th + 0.6);
+  const double ref = t.cast_ray(x, y, dirx, diry, 120.0, s);
+  for (double slop : {-40.0, -10.0, 10.0, 40.0}) {
+    REQUIRE(t.cast_ray(x, y, dirx, diry, 120.0, s + slop) == Approx(ref));
+  }
+}
+
+TEST_CASE("rays behave at the start/finish line", "[racing][track][sensor]") {
+  // The window wraps, so a car sitting on the line must see the road in front
+  // of it rather than a wall where the array happens to end.
+  const Track t = load();
+  double x, y, th;
+  t.pose_at(0.0, &x, &y, &th);
+  const double w = t.half_width_at(0.0);
+  REQUIRE(t.cast_ray(x, y, -std::sin(th), std::cos(th), 200.0, 0.0) ==
+          Approx(w).margin(0.02));
+  REQUIRE(t.cast_ray(x, y, std::cos(th), std::sin(th), 50.0, 0.0) ==
+          Approx(50.0));
+  // Approaching the line from just before it, looking across, still works.
+  double bx, by, bth;
+  const double sb = t.length() - 5.0;
+  t.pose_at(sb, &bx, &by, &bth);
+  REQUIRE(t.cast_ray(bx, by, -std::sin(bth), std::cos(bth), 200.0, sb) ==
+          Approx(t.half_width_at(sb)).margin(0.02));
+}

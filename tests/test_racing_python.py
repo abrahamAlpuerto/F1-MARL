@@ -455,3 +455,86 @@ def test_a_retired_car_stops_moving(tmp_path):
         assert np.allclose(x[after, c], x[first + 1, c])
         assert np.allclose(y[after, c], y[first + 1, c])
         assert np.all(speed[after, c] < 1e-3)
+
+
+# --- the sensor observation --------------------------------------------------
+
+def test_sensor_observation_withholds_the_reference_line():
+    """The point of sensor mode: nothing hands the car the track direction.
+
+    A policy under the default observation gets its heading error against a
+    reference line, and a trained one steers almost entirely off that term.
+    Sensor mode replaces it with rays, so the layout must be shorter and must
+    not carry the giveaways.
+    """
+    cfg = make_config(teams=2, per_team=2, distance=900.0)
+    frenet = racing.RaceEnv(cfg, 0)
+
+    cfg2 = make_config(teams=2, per_team=2, distance=900.0)
+    cfg2.observation.mode = racing.ObservationConfig.SENSOR
+    sensor = racing.RaceEnv(cfg2, 0)
+
+    assert sensor.observation_mode == racing.ObservationConfig.SENSOR
+    assert frenet.observation_mode == racing.ObservationConfig.FRENET
+    # 4 own + n_rays + 2 context + 2 aero + 5 per neighbour.
+    expect = 4 + cfg2.observation.n_rays + 2 + 2 + 5 * cfg2.race.n_neighbours
+    assert sensor.obs_dim == expect
+    assert sensor.obs_dim != frenet.obs_dim
+
+
+def test_sensor_rays_see_the_road():
+    cfg = make_config(teams=2, per_team=2, distance=1500.0)
+    cfg.observation.mode = racing.ObservationConfig.SENSOR
+    cfg.reward.terminate_off_track = False
+    env = racing.RaceEnv(cfg, 0)
+    env.reset(3)
+
+    n_rays = cfg.observation.n_rays
+    act = np.zeros((env.n_cars, 2), dtype=np.float32)
+    act[:, 1] = 0.35
+
+    seen = []
+    for _ in range(300):
+        if env.done:
+            break
+        o = env.observe()
+        assert np.isfinite(o).all()
+        rays = o[:, 4:4 + n_rays]
+        # Normalised, so a ray is never negative and never past its range.
+        assert rays.min() >= 0.0
+        assert rays.max() <= 1.0 + 1e-6
+        seen.append(rays[0].copy())
+        env.step(act)
+
+    seen = np.asarray(seen)
+    # The beams have to actually carry information. A constant reading would
+    # mean the cast is not tracking the car, and the policy would be blind
+    # without anything failing loudly.
+    assert seen.std(axis=0).max() > 0.01
+    # And the beam looking straight ahead should on average see further than
+    # the ones pointing at the edges beside the car.
+    mid = n_rays // 2
+    assert seen[:, mid].mean() > seen[:, 0].mean()
+    assert seen[:, mid].mean() > seen[:, -1].mean()
+
+
+def test_sensor_observation_is_deterministic():
+    """Same discipline as everything else here: two identical races agree."""
+    def run():
+        cfg = make_config(teams=2, per_team=2, distance=900.0)
+        cfg.observation.mode = racing.ObservationConfig.SENSOR
+        env = racing.RaceEnv(cfg, 0)
+        env.reset(5)
+        act = np.zeros((env.n_cars, 2), dtype=np.float32)
+        act[:, 1] = 0.4
+        out = []
+        for _ in range(120):
+            if env.done:
+                break
+            out.append(env.observe().copy())
+            env.step(act)
+        return np.asarray(out)
+
+    a, b = run(), run()
+    assert a.shape == b.shape
+    assert np.array_equal(a, b)

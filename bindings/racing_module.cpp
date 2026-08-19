@@ -148,6 +148,15 @@ PYBIND11_MODULE(_racing, m) {
       .def_readwrite("terminate_off_track", &RewardConfig::terminate_off_track)
       .def_readwrite("retire_penalty", &RewardConfig::retire_penalty);
 
+  py::class_<ObservationConfig> oc(m, "ObservationConfig");
+  oc.def(py::init<>())
+      .def_readwrite("mode", &ObservationConfig::mode)
+      .def_readwrite("n_rays", &ObservationConfig::n_rays)
+      .def_readwrite("ray_fov", &ObservationConfig::ray_fov)
+      .def_readwrite("ray_range", &ObservationConfig::ray_range);
+  oc.attr("FRENET") = int(ObservationConfig::FRENET);
+  oc.attr("SENSOR") = int(ObservationConfig::SENSOR);
+
   py::class_<RaceConfig>(m, "RaceConfig")
       .def(py::init<>())
       .def_readwrite("recover_after_s", &RaceConfig::recover_after_s)
@@ -250,6 +259,7 @@ PYBIND11_MODULE(_racing, m) {
       .def_readwrite("contact", &EnvConfig::contact)
       .def_readwrite("damage", &EnvConfig::damage)
       .def_readwrite("reward", &EnvConfig::reward)
+      .def_readwrite("observation", &EnvConfig::observation)
       .def_readwrite("race", &EnvConfig::race)
       .def_readwrite("atmosphere", &EnvConfig::atmosphere)
       .def_readwrite("fuel", &EnvConfig::fuel)
@@ -493,6 +503,7 @@ PYBIND11_MODULE(_racing, m) {
            py::arg("config"), py::arg("env_idx") = 0)
       .def_property_readonly("n_cars", &RaceEnv::n_cars)
       .def_property_readonly("obs_dim", &RaceEnv::obs_dim)
+      .def_property_readonly("observation_mode", &RaceEnv::observation_mode)
       .def_property_readonly("done", &RaceEnv::done)
       .def_property_readonly("race_time", &RaceEnv::race_time)
       .def_property_readonly("race_distance", &RaceEnv::race_distance)

@@ -741,6 +741,42 @@ struct RewardConfig {
 };
 
 // --- the race --------------------------------------------------------------
+// --- what the policy is allowed to see --------------------------------------
+//
+// The single most consequential choice in the whole configuration, because it
+// decides what problem is actually being solved.
+//
+// FRENET hands the car its heading error against a reference line, its lateral
+// offset from that line, and a perfect preview of the curvature 300 m ahead.
+// Measured on a trained policy, steering correlates with that heading error at
+// -0.96, and zeroing the term alone drops the field from 19 of 20 finishing to
+// 0 of 20, off the road 82% of the time. So under FRENET the policy is not
+// working out where the track goes: it is handed the answer and learns a
+// proportional controller on it. What it genuinely learns is speed control and
+// racecraft, which is a real problem, just not the one it looks like.
+//
+// SENSOR replaces all of that with rays cast from the car to the edges of the
+// corridor, in the car's OWN frame. Nothing says which way the road runs; the
+// policy has to infer it from what it can see and from its own motion. Note
+// what is deliberately absent as well: lap position is not published, because a
+// policy given both the arc length and a fixed circuit can memorise a steering
+// angle per metre and bypass the rays entirely, which is the same shortcut
+// wearing a different hat.
+//
+// FRENET remains the default. It is what every existing checkpoint was trained
+// against, and changing an observation layout invalidates them all.
+struct ObservationConfig {
+  enum Mode { FRENET = 0, SENSOR = 1 };
+  int mode = FRENET;
+
+  // Rays are spread evenly over `ray_fov`, centred on where the car points.
+  // 15 over ~137 degrees puts one roughly every 10 degrees, which resolves a
+  // corner entry without making the observation mostly walls.
+  int n_rays = 15;
+  double ray_fov = 2.40;     // radians, total spread
+  double ray_range = 100.0;  // m; a ray that reaches this far reports 1.0
+};
+
 struct RaceConfig {
   // A car stranded well off the circuit is put back on it, facing the right
   // way, at a low speed, after this long. Without it a race can end with three
@@ -766,6 +802,7 @@ struct EnvConfig {
   ContactConfig contact;
   DamageConfig damage;
   RewardConfig reward;
+  ObservationConfig observation;
   RaceConfig race;
   AtmosphereConfig atmosphere;
   FuelConfig fuel;

@@ -70,7 +70,31 @@ Track Track::load(const std::string& path) {
   if (std::abs(expect_ds - t.ds_) > 1e-6 * std::max(1.0, t.ds_)) {
     throw std::runtime_error("track ds_m is inconsistent with lap_length_m / n");
   }
+  t.build_edges();
   return t;
+}
+
+void Track::build_edges() {
+  const int n = static_cast<int>(x_.size());
+  edge_lx_.resize(n);
+  edge_ly_.resize(n);
+  edge_rx_.resize(n);
+  edge_ry_.resize(n);
+  for (int i = 0; i < n; ++i) {
+    const double mag = std::sqrt(nx_[i] * nx_[i] + ny_[i] * ny_[i]);
+    const double ux = mag > 1e-12 ? nx_[i] / mag : 0.0;
+    const double uy = mag > 1e-12 ? ny_[i] / mag : 0.0;
+    // Symmetric, from half_width_at, because that is the corridor the
+    // off-track test in the environment uses. half_right_ is carried in the
+    // file but nothing reads it, and a ray that disagreed with the penalty
+    // would be worse than no ray at all.
+    const double w = half_left_[i];
+    edge_lx_[i] = x_[i] + ux * w;
+    edge_ly_[i] = y_[i] + uy * w;
+    edge_rx_[i] = x_[i] - ux * w;
+    edge_ry_[i] = y_[i] - uy * w;
+    if (w > max_half_width_) max_half_width_ = w;
+  }
 }
 
 double Track::wrap_s(double s) const {
@@ -92,6 +116,76 @@ double Track::kappa_at(double s) const {
   const int n = static_cast<int>(kappa_.size());
   const int i0 = i % n, i1 = (i + 1) % n;
   return kappa_[i0] * (1.0 - f) + kappa_[i1] * f;
+}
+
+namespace {
+
+// Distance along a ray to where it crosses a segment, or -1 if it misses.
+//
+//     P + t*D  =  A + u*(B - A),   t >= 0,  u in [0, 1]
+//
+// Solved by crossing both sides with each direction in turn. Two cross
+// products and a divide; this is the inner loop of every observation in sensor
+// mode, so it stays branch-light and allocation-free.
+inline double ray_hits_segment(double px, double py, double dx, double dy,
+                               double ax, double ay, double bx, double by) {
+  const double ex = bx - ax, ey = by - ay;
+  const double denom = dx * ey - dy * ex;
+  if (std::abs(denom) < 1e-12) return -1.0;  // parallel
+  const double qx = ax - px, qy = ay - py;
+  const double t = (qx * ey - qy * ex) / denom;
+  if (t < 0.0) return -1.0;
+  const double u = (qx * dy - qy * dx) / denom;
+  if (u < 0.0 || u > 1.0) return -1.0;
+  return t;
+}
+
+}  // namespace
+
+double Track::cast_ray(double px, double py, double dx, double dy,
+                       double max_range, double s_hint) const {
+  const double mag = std::sqrt(dx * dx + dy * dy);
+  if (mag < 1e-12) return max_range;
+  dx /= mag;
+  dy /= mag;
+
+  const int n = static_cast<int>(x_.size());
+  if (n < 2 || edge_lx_.empty()) return max_range;
+
+  // Only the stretch of circuit a ray of this length could reach.
+  const int i0 = static_cast<int>(wrap_s(s_hint) / ds_);
+  const int span = static_cast<int>(max_range / ds_) + 3;
+
+  // Walked OUTWARD from the car rather than straight through the window, so it
+  // can stop as soon as the remaining segments are all further away than the
+  // best hit so far. Segments adjacent in arc length are adjacent in space, so
+  // index distance bounds real distance -- once k*ds exceeds the current hit
+  // (plus the corridor's own width, since an edge point sits off to the side of
+  // the arc length it belongs to) nothing further can beat it.
+  //
+  // Worth the care: most rays in a corner hit within a few metres, and the
+  // straight-through version scanned all 83 segments regardless. This is the
+  // difference between the sensor observation costing a third of the training
+  // budget and costing a tenth of it.
+  const double slack = max_half_width_ + 2.0 * ds_;
+
+  double best = max_range;
+  for (int k = 0; k <= span; ++k) {
+    if (k * ds_ - slack > best) break;
+    for (int pass = 0; pass < 2; ++pass) {
+      if (k == 0 && pass == 1) continue;  // the car's own segment, once
+      const int off = pass == 0 ? k : -k;
+      const int i = ((i0 + off) % n + n) % n;
+      const int j = (i + 1) % n;
+      const double tl = ray_hits_segment(px, py, dx, dy, edge_lx_[i],
+                                         edge_ly_[i], edge_lx_[j], edge_ly_[j]);
+      if (tl >= 0.0 && tl < best) best = tl;
+      const double tr = ray_hits_segment(px, py, dx, dy, edge_rx_[i],
+                                         edge_ry_[i], edge_rx_[j], edge_ry_[j]);
+      if (tr >= 0.0 && tr < best) best = tr;
+    }
+  }
+  return best;
 }
 
 double Track::half_width_at(double s) const {

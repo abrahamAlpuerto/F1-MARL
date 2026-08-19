@@ -156,6 +156,15 @@ void load_reward(const json& j, RewardConfig* r) {
   reject_unknown(j, seen, "reward");
 }
 
+void load_observation(const json& j, ObservationConfig* o) {
+  std::set<std::string> seen;
+  take(j, "mode", &o->mode, &seen);
+  take(j, "n_rays", &o->n_rays, &seen);
+  take(j, "ray_fov", &o->ray_fov, &seen);
+  take(j, "ray_range", &o->ray_range, &seen);
+  reject_unknown(j, seen, "observation");
+}
+
 void load_race(const json& j, RaceConfig* r) {
   std::set<std::string> seen;
   take(j, "recover_after_s", &r->recover_after_s, &seen);
@@ -258,6 +267,7 @@ EnvConfig EnvConfig::from_json_string(const std::string& text) {
   if (j.contains("contact")) load_contact(j.at("contact"), &c.contact);
   if (j.contains("damage")) load_damage(j.at("damage"), &c.damage);
   if (j.contains("reward")) load_reward(j.at("reward"), &c.reward);
+  if (j.contains("observation")) load_observation(j.at("observation"), &c.observation);
   if (j.contains("race")) load_race(j.at("race"), &c.race);
   if (j.contains("atmosphere")) load_atmosphere(j.at("atmosphere"), &c.atmosphere);
   if (j.contains("fuel")) load_fuel(j.at("fuel"), &c.fuel);
@@ -265,7 +275,8 @@ EnvConfig EnvConfig::from_json_string(const std::string& text) {
   if (j.contains("powertrain")) load_powertrain(j.at("powertrain"), &c.powertrain);
   if (j.contains("drs")) load_drs(j.at("drs"), &c.drs);
   for (const char* k : {"vehicle", "sim", "track", "field", "aero", "contact",
-                        "damage", "reward", "race", "atmosphere", "fuel", "tyre",
+                        "damage", "reward", "observation", "race",
+                        "atmosphere", "fuel", "tyre",
                         "powertrain", "drs"}) {
     seen.insert(k);
   }
@@ -388,6 +399,12 @@ std::string EnvConfig::to_json_string() const {
   r["off_track_grip"] = reward.off_track_grip;
   r["terminate_off_track"] = reward.terminate_off_track;
   r["retire_penalty"] = reward.retire_penalty;
+
+  auto& ob = j["observation"];
+  ob["mode"] = observation.mode;
+  ob["n_rays"] = observation.n_rays;
+  ob["ray_fov"] = observation.ray_fov;
+  ob["ray_range"] = observation.ray_range;
 
   auto& rc = j["race"];
   rc["recover_after_s"] = race.recover_after_s;

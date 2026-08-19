@@ -87,6 +87,9 @@ class RaceEnv {
   // `out` is [n_cars, obs_dim].
   void observe(float* out) const;
   int obs_dim() const;
+  // Which of the two observations this environment publishes. Kept separate so
+  // the layout can be read without inspecting the config.
+  int observation_mode() const { return cfg_.observation.mode; }
 
   int n_cars() const { return n_cars_; }
   bool done() const { return done_; }
@@ -125,6 +128,7 @@ class RaceEnv {
 
  private:
   void place_on_grid(uint32_t ep);
+  void observe_sensor(float* out) const;
   void physics_step(double dt);
   void update_drs(CarState* c, double prev_s);
   double potential(double distance) const;

@@ -73,6 +73,27 @@ class Track {
   // reference for the visualizer.
   double telemetry_speed_at(double s) const;
 
+  // --- what a car can SEE ---------------------------------------------------
+  //
+  // Distance from a point to the edge of the corridor along a direction, or
+  // `max_range` if the ray reaches that far without leaving the road. This is
+  // the primitive behind the sensor observation: it is what lets a policy be
+  // asked to work out where the track goes, rather than being handed its
+  // heading error against a reference line and told to null it.
+  //
+  // The edges are at +/- half_width_at(s), which is deliberately the SAME
+  // corridor the off-track test uses. A ray that reported a wall somewhere the
+  // physics did not would teach a policy to avoid a line that was never
+  // penalised, or to trust one that was.
+  //
+  // `s_hint` bounds the search: only the stretch of circuit within `max_range`
+  // of that arc length is considered, which is what keeps this affordable at
+  // 2048 points a lap. Pass the car's own `f.s`.
+  //
+  // `dx`, `dy` need not be normalised.
+  double cast_ray(double px, double py, double dx, double dy,
+                  double max_range, double s_hint) const;
+
   const std::vector<double>& xs() const { return x_; }
   const std::vector<double>& ys() const { return y_; }
   const std::vector<double>& kappas() const { return kappa_; }
@@ -86,8 +107,14 @@ class Track {
   double length_ = 0.0;
   double ds_ = 0.0;
   double ref_lap_time_ = 0.0;
+  void build_edges();
+
   std::vector<double> x_, y_, z_, theta_, kappa_, nx_, ny_;
   std::vector<double> half_left_, half_right_;
+  // The corridor edges as two closed polylines, precomputed once at load.
+  // Rebuilding these per ray would dominate the cost of casting one.
+  std::vector<double> edge_lx_, edge_ly_, edge_rx_, edge_ry_;
+  double max_half_width_ = 0.0;  // bounds how far an edge sits off its own s
   std::vector<double> tel_speed_;
   std::vector<double> sector_s_;
 };

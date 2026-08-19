@@ -71,6 +71,20 @@ def build_config(args):
     return cfg
 
 
+def apply_checkpoint_observation(cfg, path):
+    """Set the env's observation mode to whatever the checkpoint expects.
+
+    obs_dim differs between the two modes, so a mismatch is not a subtle
+    degradation -- it is a shape error three frames in, or worse, silently
+    feeding a policy numbers that mean something else entirely.
+    """
+    import torch
+    ckpt = torch.load(path, map_location="cpu", weights_only=False)
+    if ckpt.get("observation", "frenet") == "sensor":
+        cfg.observation.mode = racing.ObservationConfig.SENSOR
+    return cfg
+
+
 def load_policy(path, obs_dim):
     import torch
     from train_marl import policy_from_checkpoint
@@ -96,6 +110,8 @@ def run_one(cfg, seed, policy_path=None, pace=0.86, deterministic=False):
     honest thing to measure -- a stochastic policy is what actually races.
     """
     cfg.seed = seed
+    if policy_path:
+        apply_checkpoint_observation(cfg, policy_path)
     env = racing.RaceEnv(cfg, 0)
     env.reset(seed)
 

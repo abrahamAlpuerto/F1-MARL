@@ -77,6 +77,11 @@ RaceEnv::RaceEnv(EnvConfig cfg, std::shared_ptr<const Track> track,
 }
 
 int RaceEnv::obs_dim() const {
+  if (cfg_.observation.mode == ObservationConfig::SENSOR) {
+    // own dynamics (4) + rays (R) + race context (2) + aero (2)
+    // + neighbours (5 each). No lap position: see ObservationConfig.
+    return 4 + cfg_.observation.n_rays + 2 + 2 + 5 * cfg_.race.n_neighbours;
+  }
   // own dynamics (4) + track relative (2) + curvature lookahead (K)
   // + race context (3) + aero (2) + neighbours (5 each)
   return 4 + 2 + cfg_.curvature_lookahead + 3 + 2 + 5 * cfg_.race.n_neighbours;
@@ -685,6 +690,10 @@ void RaceEnv::step(const float* actions, float* rewards, StepInfo* info) {
 // --- observation -----------------------------------------------------------
 
 void RaceEnv::observe(float* out) const {
+  if (cfg_.observation.mode == ObservationConfig::SENSOR) {
+    observe_sensor(out);
+    return;
+  }
   const int d = obs_dim();
   const int nn = cfg_.race.n_neighbours;
 
@@ -755,6 +764,109 @@ void RaceEnv::observe(float* out) const {
         const CarState& other = cars_[j];
         o[k++] = f(std::clamp(near[q].first / kGapScale, -4.0, 4.0));
         o[k++] = f((other.f.e_y - c.f.e_y) / half_w);
+        o[k++] = f(std::clamp((other.v.speed() - v) / kRelSpeedScale, -4.0, 4.0));
+        o[k++] = f(other.team == c.team ? 1.0 : 0.0);
+        o[k++] = 1.0f;  // this slot holds a car
+      } else {
+        o[k++] = 0.0f;
+        o[k++] = 0.0f;
+        o[k++] = 0.0f;
+        o[k++] = 0.0f;
+        o[k++] = 0.0f;  // nobody there
+      }
+    }
+  }
+}
+
+// --- the sensor observation --------------------------------------------------
+//
+// Everything here is in the CAR's frame. Nothing tells it which way the circuit
+// runs, where the reference line is, or how far round the lap it has got; if it
+// is going to take a corner it has to see the corner. See ObservationConfig for
+// the measurements that motivated this.
+
+void RaceEnv::observe_sensor(float* out) const {
+  const int d = obs_dim();
+  const int nn = cfg_.race.n_neighbours;
+  const int n_rays = cfg_.observation.n_rays;
+  const double range = std::max(cfg_.observation.ray_range, 1.0);
+  const double fov = cfg_.observation.ray_fov;
+
+  for (int i = 0; i < n_cars_; ++i) {
+    const CarState& c = cars_[i];
+    float* o = out + static_cast<size_t>(i) * d;
+    int k = 0;
+
+    // --- what the car feels ------------------------------------------------
+    // Proprioception, and legitimate: a driver knows their own speed, and feels
+    // yaw rate and slip through the seat.
+    const double v = c.v.speed();
+    const double slip =
+        v > 1.0 ? std::atan2(c.v.vy, std::max(c.v.vx, 0.1)) : 0.0;
+    o[k++] = f(c.v.vx / kSpeedScale);
+    o[k++] = f(c.v.vy / kLatVelScale);
+    o[k++] = f(c.v.r / kYawRateScale);
+    o[k++] = f(slip / kSlipScale);
+
+    // --- what the car sees -------------------------------------------------
+    // Rays fanned around the car's own heading, each reporting how far the road
+    // continues in that direction. 1.0 means "still road as far as this looks".
+    //
+    // Cast from the nose rather than the centre of mass, because a car that has
+    // put its front wheels over the line has already left the road and the
+    // sensor should say so.
+    const double nose_x = c.v.x + 0.5 * cfg_.vehicle.length * std::cos(c.v.psi);
+    const double nose_y = c.v.y + 0.5 * cfg_.vehicle.length * std::sin(c.v.psi);
+    for (int q = 0; q < n_rays; ++q) {
+      const double frac = n_rays > 1 ? static_cast<double>(q) / (n_rays - 1) : 0.5;
+      const double a = c.v.psi + (frac - 0.5) * fov;
+      const double dist = track_->cast_ray(nose_x, nose_y, std::cos(a),
+                                           std::sin(a), range, c.f.s);
+      o[k++] = f(dist / range);
+    }
+
+    // --- race context ------------------------------------------------------
+    // How much race is left and where the car is classified. Deliberately NOT
+    // arc length: with a fixed circuit that is a key into a memorised steering
+    // table, and the rays above would stop mattering.
+    const double remaining = std::max(0.0, race_distance_ - c.distance);
+    o[k++] = f(remaining / std::max(race_distance_, 1.0));
+    o[k++] = f(n_cars_ > 1 ? double(c.position - 1) / (n_cars_ - 1) : 0.0);
+
+    // --- what the air is doing ---------------------------------------------
+    o[k++] = f(c.downforce_factor);
+    o[k++] = f(c.drag_factor);
+
+    // --- neighbours, in the car's own frame --------------------------------
+    // Sorted by true distance rather than by along-track gap, and reported as a
+    // bearing and range in the car's frame. The Frenet version leaks the track
+    // direction through delta_s, which is exactly the thing being withheld.
+    const double cp = std::cos(-c.v.psi), sp = std::sin(-c.v.psi);
+    std::vector<std::pair<double, int>> near;
+    near.reserve(n_cars_);
+    for (int j = 0; j < n_cars_; ++j) {
+      if (j == i || cars_[j].retired) continue;
+      const double dx = cars_[j].v.x - c.v.x;
+      const double dy = cars_[j].v.y - c.v.y;
+      near.emplace_back(dx * dx + dy * dy, j);
+    }
+    std::sort(near.begin(), near.end(),
+              [](const std::pair<double, int>& a, const std::pair<double, int>& b) {
+                if (a.first != b.first) return a.first < b.first;
+                return a.second < b.second;  // deterministic on an exact tie
+              });
+
+    for (int q = 0; q < nn; ++q) {
+      if (q < static_cast<int>(near.size())) {
+        const int j = near[q].second;
+        const CarState& other = cars_[j];
+        const double dx = other.v.x - c.v.x;
+        const double dy = other.v.y - c.v.y;
+        // Into the body frame: +x is where the car points, +y is its left.
+        const double fx = dx * cp - dy * sp;
+        const double fy = dx * sp + dy * cp;
+        o[k++] = f(std::clamp(fx / kGapScale, -4.0, 4.0));
+        o[k++] = f(std::clamp(fy / kGapScale, -4.0, 4.0));
         o[k++] = f(std::clamp((other.v.speed() - v) / kRelSpeedScale, -4.0, 4.0));
         o[k++] = f(other.team == c.team ? 1.0 : 0.0);
         o[k++] = 1.0f;  // this slot holds a car

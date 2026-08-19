@@ -96,6 +96,12 @@ def main():
     args = ap.parse_args()
 
     cfg = build_config(args)
+    if args.policy:
+        # The checkpoint decides what the car can see; see train_marl.py.
+        import torch
+        ck = torch.load(args.policy, map_location="cpu", weights_only=False)
+        if ck.get("observation", "frenet") == "sensor":
+            cfg.observation.mode = racing.ObservationConfig.SENSOR
     env = racing.RaceEnv(cfg, 0)
     env.reset(args.seed)
 

@@ -301,6 +301,8 @@ def drive_phase_config(args):
         cfg.reward.time_penalty = args.time_penalty
     cfg.aero.enabled = False
     cfg.contact.enabled = False
+    if args.observation == "sensor":
+        cfg.observation.mode = racing.ObservationConfig.SENSOR
     if args.retire_penalty is not None:
         cfg.reward.retire_penalty = args.retire_penalty
     return cfg
@@ -340,6 +342,8 @@ def race_phase_config(args):
     # to be rescaled with it, and that is the part that is easy to miss: every
     # one of them is sized for a world where a mistake ENDS the episode.
     cfg.reward.terminate_off_track = False
+    if args.observation == "sensor":
+        cfg.observation.mode = racing.ObservationConfig.SENSOR
 
     # Charged per step spent outside the corridor. At the 5.0 default a car is
     # billed until it is recovered ~3 s later rather than once on the way out.
@@ -568,6 +572,11 @@ def main():
                     choices=[False, True],
                     help="phase 2 only. 0 races under a real race's rules, so "
                          "the policy meets barriers and damage during training")
+    ap.add_argument("--observation", default="frenet", choices=["frenet", "sensor"],
+                    help="frenet hands the policy its heading error against a "
+                         "reference line; sensor makes it work the road out "
+                         "from rays. Changes obs_dim, so checkpoints are not "
+                         "interchangeable between the two")
     ap.add_argument("--off-track-penalty", type=float, default=None,
                     help="per step spent outside the corridor. The default 5.0 "
                          "assumes the car is deleted on the step it goes off; "
@@ -606,6 +615,7 @@ def main():
                 "obs_dim": net.obs_dim,
                 "hidden": args.hidden,
                 "n_neighbours": race_cfg.race.n_neighbours,
+                "observation": args.observation,
                 "config": race_cfg.to_json_string()}, args.out)
     print(f"\nsaved {args.out}")
     print("watch it race:")
