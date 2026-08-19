@@ -694,17 +694,34 @@ struct RewardConfig {
   // -- penalties ----------------------------------------------------------
   double off_track_penalty = 5.0;   // per step spent outside the corridor
   double contact_penalty = 2.0;     // per contact, scaled by severity
-  double time_penalty = 0.0;        // per policy step; 0 while shaping carries it
-
-  // Paid once, on the step a car retires. A DNF already costs a car everything
-  // it would have earned for the rest of the race, which is most of the signal;
-  // this is on top so that ending your own race is clearly worse than finishing
-  // last, rather than merely equal to it.
+  // Per policy step. 0 here because a race already has time pressure -- the
+  // position term pays for places, and places are lost by being slow.
   //
-  // Note what this interacts with: in phase 1 of training,
-  // `terminate_off_track` is on and every excursion is a retirement, so this is
-  // charged on each one. That is the intent -- leaving the circuit should hurt
-  // -- but it is the number to turn down first if early training goes unstable.
+  // Training is different, and there is a trap here. With no rivals and an
+  // episode that ends when the car leaves the circuit, progress paid per metre
+  // makes driving SLOWLY the better strategy: it survives longer and covers
+  // more total distance. Phase 1 duly slides from 183 kph over 260 m to 48 kph
+  // over 688 m, which is 13 units of reward against 34.
+  //
+  // Setting this to 0.05 reverses that trade and takes phase 1 to 215 kph. It
+  // also produces a policy that puts every car into the barrier on the first
+  // lap, because with `terminate_off_track` the training world has no barriers
+  // in it and flat-out is genuinely optimal there. See the long note in
+  // examples/train_marl.py; the lever exists, but reach for it only alongside a
+  // phase 2 that models the consequence.
+  double time_penalty = 0.0;
+
+  // Paid once, on the step a car retires from an ACCIDENT -- a collision or the
+  // barrier. A DNF already costs a car everything it would have earned for the
+  // rest of the race, which is most of the signal; this is on top so that
+  // ending your own race is clearly worse than finishing last rather than
+  // merely equal to it.
+  //
+  // Deliberately NOT charged when the reason is RETIRE_OFF_TRACK, which only
+  // happens under `terminate_off_track` -- a training device rather than an
+  // accident. Charging it there makes standing still the best available policy
+  // and training collapses; the measurement and the reasoning are in race.cpp
+  // next to the exception.
   double retire_penalty = 20.0;
 
   // -- track limits -------------------------------------------------------

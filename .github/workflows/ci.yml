@@ -58,12 +58,17 @@ jobs:
 
       - name: Track rebuilds from telemetry
         shell: bash
+        # Writes into the workspace rather than /tmp. `shell: bash` on a Windows
+        # runner is Git Bash, where /tmp is a POSIX-emulation path that Python
+        # -- a native Windows binary -- does not resolve, so the write landed
+        # somewhere the reader could not find it and this step had failed on
+        # windows-latest since the first commit.
         run: |
-          python tools/build_track.py --out /tmp/refit_track.json
+          python tools/build_track.py --out refit_track.json
           python - <<'PY'
           import json
           a = json.load(open('data/tracks/bahrain.json'))
-          b = json.load(open('/tmp/refit_track.json'))
+          b = json.load(open('refit_track.json'))
           assert abs(a['lap_length_m'] - b['lap_length_m']) < 1.0, "track length drifted"
           assert a['n'] == b['n']
           print(f"track reproduces: {b['lap_length_m']:.2f} m, "
