@@ -334,7 +334,9 @@ def main() -> int:
         "telemetry_speed_ms": [round(float(v), 3) for v in v_ref],
     }
 
-    os.makedirs(os.path.dirname(args.out), exist_ok=True)
+    # abspath first: for a bare filename like `out.json`, dirname is the empty
+    # string and makedirs("") raises rather than doing nothing.
+    os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
     with open(args.out, "w") as f:
         json.dump(out, f, separators=(",", ":"))
     print(f"\nwrote {args.out} ({os.path.getsize(args.out)/1024:.0f} KB)")
